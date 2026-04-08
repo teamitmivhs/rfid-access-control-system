@@ -4,11 +4,16 @@
 #include <HTTPClient.h>
 #include <ArduinoOTA.h>  // === OTA ===
 
-const char* ssid = "TEAM IT";
-const char* password = "1TM1TR4101101MIVHS2025";
+void bener();
+void salah();
+void buka();
+void kirimPesan(String pesan);
 
-String BOT_TOKEN = "7824299576:AAFktvDjZDJouuklDs9QIfBM_PKz2psFa1M";
-String CHAT_ID = "2119977980";
+const char* ssid = "ALVAROMIKHAYLA";
+const char* password = "IBUNDAKUSAYANG01";
+
+String BOT_TOKEN = "8683423891:AAFTBmo3owh5sA0MGPgvX5IpZv3lI7iFYFc";
+String CHAT_ID = "-5059128316";
 
 #define LRM_PIN 26
 #define BUZ_PIN 13
@@ -255,5 +260,5 @@ void kirimPesan(String pesan) {
     http.end();
   } else {
     Serial.println("WiFi not connected");
+   } 
   }
-}
