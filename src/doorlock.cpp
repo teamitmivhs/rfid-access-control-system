@@ -12,11 +12,11 @@ void kirimPesan(String pesan);
 String getWaktuDanTanggal();
 String getHari();
 
-const char* ssid = "TEAM IT";
-const char* password = "F@zzw0rd2026";
+const char* ssid = "ssid";
+const char* password = "password";
 
-String BOT_TOKEN = "8683423891:AAFTBmo3owh5sA0MGPgvX5IpZv3lI7iFYFc";
-String CHAT_ID = "-5059128316";
+String BOT_TOKEN = "your telegram bot token";
+String CHAT_ID = "your telegram chat id";
 
 #define LRM_PIN 26
 #define BUZ_PIN 13
