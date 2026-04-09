@@ -3,14 +3,17 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoOTA.h>  // === OTA ===
+#include <time.h>
 
 void bener();
 void salah();
 void buka();
 void kirimPesan(String pesan);
+String getWaktuDanTanggal();
+String getHari();
 
-const char* ssid = "ALVAROMIKHAYLA";
-const char* password = "IBUNDAKUSAYANG01";
+const char* ssid = "JLPT_UNBK";
+const char* password = "semogaberhasil2026";
 
 String BOT_TOKEN = "8683423891:AAFTBmo3owh5sA0MGPgvX5IpZv3lI7iFYFc";
 String CHAT_ID = "-5059128316";
@@ -126,7 +129,20 @@ void setup() {
     Serial.print(".");
   }
   Serial.println("Connected!");
-  kirimPesan("Door LOCK wifi connect successful");
+  
+  // Configure NTP for getting time
+  configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+  Serial.println("Waiting for NTP time sync...");
+  time_t now = time(nullptr);
+  while (now < 24 * 3600) {
+    delay(500);
+    Serial.print(".");
+    now = time(nullptr);
+  }
+  Serial.println();
+  Serial.println("Time synced!");
+  
+  kirimPesan("Door LOCK wifi connect successful\n" + getWaktuDanTanggal() + "\n" + getHari());
 
   // === OTA ===
   ArduinoOTA.setHostname("DoorLock-ESP32");
@@ -211,11 +227,11 @@ void loop() {
     Serial.println("access granted");
     bener();
     buka();
-    kirimPesan("Nama: " + nama + "\nKartu: " + kartu + "\nStatus: Access Granted");
+    kirimPesan("Nama: " + nama + "\nKartu: " + kartu + "\nStatus: Access Granted\n" + getWaktuDanTanggal() + "\nHari: " + getHari());
   } else {
     Serial.println("access denied");
     salah();
-    kirimPesan("Kartu: " + kartu + "\nStatus: Access Denied");
+    kirimPesan("Kartu: " + kartu + "\nStatus: Access Denied\n" + getWaktuDanTanggal() + "\nHari: " + getHari());
   }
 
   mfrc522.PICC_HaltA();
@@ -260,5 +276,21 @@ void kirimPesan(String pesan) {
     http.end();
   } else {
     Serial.println("WiFi not connected");
-   } 
   }
+}
+
+String getWaktuDanTanggal() {
+  time_t now = time(nullptr);
+  struct tm* timeinfo = localtime(&now);
+  char buffer[80];
+  strftime(buffer, sizeof(buffer), "%d-%m-%Y %H:%M:%S", timeinfo);
+  return String(buffer);
+}
+
+String getHari() {
+  time_t now = time(nullptr);
+  struct tm* timeinfo = localtime(&now);
+  
+  const char* hari[] = {"Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"};
+  return String(hari[timeinfo->tm_wday]);
+}
