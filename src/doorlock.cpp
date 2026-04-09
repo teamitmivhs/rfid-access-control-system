@@ -12,8 +12,8 @@ void kirimPesan(String pesan);
 String getWaktuDanTanggal();
 String getHari();
 
-const char* ssid = "JLPT_UNBK";
-const char* password = "semogaberhasil2026";
+const char* ssid = "TEAM IT";
+const char* password = "F@zzw0rd2026";
 
 String BOT_TOKEN = "8683423891:AAFTBmo3owh5sA0MGPgvX5IpZv3lI7iFYFc";
 String CHAT_ID = "-5059128316";
@@ -130,7 +130,7 @@ void setup() {
   }
   Serial.println("Connected!");
   
-  // Configure NTP for getting time
+  // == Intgerasi waktu via NTP ==
   configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
   Serial.println("Waiting for NTP time sync...");
   time_t now = time(nullptr);
