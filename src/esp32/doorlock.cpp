@@ -21,7 +21,7 @@ String CHAT_ID   = "-1003302843795";
 
 //backend API
 const char* API_HOST = "192.168.107.37"; 
-const int   API_PORT = 8080;
+const int   API_PORT = 8081;
 const char* API_PATH = "/api/access/verify";
 
 #define LRM_PIN        26
@@ -343,27 +343,34 @@ void kirimPesan(String pesan) {
     return;
   }
 
-  HTTPClient http;
-  String url = "https://api.telegram.org/bot" + BOT_TOKEN + "/sendMessage";
-  http.begin(url);
-  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+  // Retry maksimal 3x
+  for (int attempt = 1; attempt <= 3; attempt++) {
+    Serial.println("Telegram attempt " + String(attempt));
+    
+    HTTPClient http;
+    http.setTimeout(10000);  // timeout 10 detik
+    
+    String url = "https://api.telegram.org/bot" + BOT_TOKEN + "/sendMessage";
+    http.begin(url);
+    http.addHeader("Content-Type", "application/x-www-form-urlencoded");
 
-  String data = "chat_id=" + CHAT_ID + "&text=" + urlEncode(pesan);
-  Serial.print("Sending Telegram: ");
-  Serial.println(data);
+    String data = "chat_id=" + CHAT_ID + "&text=" + urlEncode(pesan);
+    int httpResponseCode = http.POST(data);
+    
+    Serial.print("HTTP Response: ");
+    Serial.println(httpResponseCode);
 
-  int httpResponseCode = http.POST(data);
-  Serial.print("HTTP Response: ");
-  Serial.println(httpResponseCode);
+    http.end();
 
-  if (httpResponseCode != 200) {
-    Serial.print("Response body: ");
-    Serial.println(http.getString());
-  } else {
-    Serial.println("Message sent!");
+    if (httpResponseCode == 200) {
+      Serial.println("Message sent!");
+      return;  // sukses, keluar
+    }
+
+    if (attempt < 3) delay(2000);  // tunggu 2 detik sebelum retry
   }
 
-  http.end();
+  Serial.println("Telegram failed after 3 attempts");
 }
 
 String getWaktuDanTanggal() {
