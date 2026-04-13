@@ -66,7 +66,7 @@ func main() {
 	httpHandler := corsMiddleware(mux)
 
 	// Start server
-	addr := ":8080"
+	addr := ":8081"
 	log.Printf("Server running on %s\n", addr)
 	if err := http.ListenAndServe(addr, httpHandler); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
