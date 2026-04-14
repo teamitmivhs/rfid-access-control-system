@@ -12,17 +12,13 @@ void kirimPesan(String pesan);
 String getWaktuDanTanggal();
 String getHari();
 String urlEncode(String str);
+bool verifyAccessLocal(String uid, String &nama);
 
 const char* ssid     = "TEAM IT MIVHS";
 const char* password = "1TM1TR4101101MIVHS2025PASTIBISA2026SELALULANCAR2027GENERASI2028";
 
 String BOT_TOKEN = "8683423891:AAFTBmo3owh5sA0MGPgvX5IpZv3lI7iFYFc";
 String CHAT_ID   = "-1003302843795";
-
-//backend API
-const char* API_HOST = "192.168.107.37"; 
-const int   API_PORT = 8081;
-const char* API_PATH = "/api/access/verify";
 
 #define LRM_PIN        26
 #define BUZ_PIN        13
@@ -41,7 +37,7 @@ int   jeda2           = 200;
 int   jeda1           = jeda2;
 bool  logika1         = false;
 bool  logika3         = false;
-float lama_buka_pintu = 1.5;
+float lama_buka_pintu = 2.0;
 unsigned long waktu   = 0;
 
 //manual button variables
@@ -53,97 +49,79 @@ bool relay_is_active              = false;
 const unsigned long DEBOUNCE_DELAY = 50;
 const unsigned long RELAY_HOLD_TIME = 2000;
 
-const int jumlah_kartu = 33;
+const int jumlah_kartu = 3; // Jumlah kartu yang terdaftar
 
-//struktur untuk response dari API
-struct AccessResponse {
-  bool allowed = false;
-  String nama = "";
-  String reason = "";
+// Database kartu akses lokal
+const String daftarUID[3] = {
+  "938934FF",   // Kartu 1
+  "43358A01",   // Kartu 2 
+  "A1B2C3D4"    // Kartu 3
+};
+
+const String daftarNama[3] = {
+  "ALVARO (ADMIN)",
+  "Kartu User 1",
+  "Kartu User 2"
 };
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 
-//function untuk verifikasi akses ke backend API
-AccessResponse verifyAccessWithBackend(String uid) {
-  AccessResponse resp;
-  resp.allowed = false;
-  resp.nama = "";
-  resp.reason = "Backend error";
-
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi not connected, access denied");
-    resp.reason = "WiFi offline";
-    return resp;
+// Verifikasi kartu secara lokal (tanpa backend)
+bool verifyAccessLocal(String uid, String &nama) {
+  for (int i = 0; i < jumlah_kartu; i++) {
+    if (uid == daftarUID[i]) {
+      nama = daftarNama[i];
+      Serial.println("Kartu cocok: " + nama);
+      return true;  // Akses diberikan
+    }
   }
-
-  HTTPClient http;
-  String url = "http://" + String(API_HOST) + ":" + String(API_PORT) + String(API_PATH);
-  
-  http.begin(url);
-  http.addHeader("Content-Type", "application/json");
-
-  //buat JSON payload
-  String payload = "{\"uid\":\"" + uid + "\"}";
-  Serial.println("Sending to backend: " + payload);
-
-  int httpCode = http.POST(payload);
-  Serial.println("HTTP Response Code: " + String(httpCode));
-
-  if (httpCode == 200) {
-    String response = http.getString();
-    Serial.println("Response: " + response);
-
-    //parse JSON response sederhana
-    if (response.indexOf("\"allowed\":true") >= 0) {
-      resp.allowed = true;
-    }
-
-    //extract nama dari response
-    int nameStart = response.indexOf("\"name\":\"");
-    if (nameStart >= 0) {
-      nameStart += 8;
-      int nameEnd = response.indexOf("\"", nameStart);
-      if (nameEnd > nameStart) {
-        resp.nama = response.substring(nameStart, nameEnd);
-      }
-    }
-
-    //extract reason dari response
-    int reasonStart = response.indexOf("\"message\":\"");
-    if (reasonStart >= 0) {
-      reasonStart += 11;
-      int reasonEnd = response.indexOf("\"", reasonStart);
-      if (reasonEnd > reasonStart) {
-        resp.reason = response.substring(reasonStart, reasonEnd);
-      }
-    } else {
-      reasonStart = response.indexOf("\"reason\":\"");
-      if (reasonStart >= 0) {
-        reasonStart += 10;
-        int reasonEnd = response.indexOf("\"", reasonStart);
-        if (reasonEnd > reasonStart) {
-          resp.reason = response.substring(reasonStart, reasonEnd);
-        }
-      }
-    }
-  } else {
-    resp.reason = "HTTP " + String(httpCode);
-  }
-
-  http.end();
-  return resp;
+  Serial.println("Kartu tidak terdaftar");
+  return false;  // Kartu tidak dikenal
 }
 
 void setup() {
-  //matiin relay sebelom mulai, jadi maglock kekunci abis restart
-  pinMode(RLY_PIN, OUTPUT);
-  digitalWrite(RLY_PIN, RELAY_OFF);  //low = relay mati = maglock nyala = TERKUNCI
-
-  pinMode(MANUAL_BTN_PIN, INPUT_PULLUP);
-
   Serial.begin(9600);
   delay(1000);
+  Serial.println("\n\n=== DOOR LOCK STARTING ===");
+  
+  //matiin relay sebelom mulai, jadi maglock kekunci abis restart
+  pinMode(RLY_PIN, OUTPUT);
+  
+  Serial.println("\n*** RELAY DIAGNOSTIC TEST ***");
+  Serial.print("RLY_PIN: ");
+  Serial.println(RLY_PIN);
+  Serial.print("RELAY_ON (HIGH): ");
+  Serial.println(RELAY_ON);
+  Serial.print("RELAY_OFF (LOW): ");
+  Serial.println(RELAY_OFF);
+  
+  // Set relay to OFF state (NC - door locked)
+  digitalWrite(RLY_PIN, RELAY_OFF);
+  delay(500);
+  Serial.print("Relay state after RELAY_OFF: ");
+  Serial.println(digitalRead(RLY_PIN));
+  
+  // Test toggle relay 3x untuk diagnosa
+  Serial.println("\nToggle relay 3x untuk test GPIO4...");
+  for (int i = 0; i < 3; i++) {
+    Serial.print("Toggle ");
+    Serial.print(i + 1);
+    Serial.print(" - ON: ");
+    digitalWrite(RLY_PIN, RELAY_ON);
+    delay(300);
+    Serial.println(digitalRead(RLY_PIN));
+    
+    Serial.print("Toggle ");
+    Serial.print(i + 1);
+    Serial.print(" - OFF: ");
+    digitalWrite(RLY_PIN, RELAY_OFF);
+    delay(300);
+    Serial.println(digitalRead(RLY_PIN));
+  }
+  
+  Serial.println("*** END DIAGNOSTIC TEST ***\n");
+
+  pinMode(MANUAL_BTN_PIN, INPUT_PULLUP);
 
   pinMode(BUZ_PIN, OUTPUT);
   digitalWrite(BUZ_PIN, LOW);
@@ -161,6 +139,21 @@ void setup() {
   } else {
     Serial.println("RFID OK");
   }
+
+  // Verify relay is OFF before continuing
+  Serial.println("\n*** Relay Verification ***");
+  for (int i = 0; i < 3; i++) {
+    Serial.print("Check ");
+    Serial.print(i + 1);
+    Serial.print(": Relay pin state = ");
+    Serial.println(digitalRead(RLY_PIN));
+    if (digitalRead(RLY_PIN) != LOW) {
+      Serial.println("WARNING: Relay not OFF! Trying to set OFF again...");
+      digitalWrite(RLY_PIN, RELAY_OFF);
+      delay(500);
+    }
+  }
+  Serial.println("*** Relay OK ***\n");
 
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi");
@@ -271,19 +264,19 @@ void loop() {
   kartu.toUpperCase();
   Serial.println(kartu);
 
-  //verifikasi ke backend API
-  Serial.println("Verifying access with backend...");
-  AccessResponse accessResp = verifyAccessWithBackend(kartu);
-
-  if (accessResp.allowed) {
-    Serial.println("Access granted: " + accessResp.nama);
+  // Verifikasi kartu secara lokal
+  String nama_kartu = "";
+  Serial.println("Verifying card locally...");
+  
+  if (verifyAccessLocal(kartu, nama_kartu)) {
+    Serial.println("Access GRANTED: " + nama_kartu);
     bener();
     buka();
-    kirimPesan("Nama: " + accessResp.nama + "\nKartu: " + kartu + "\nStatus: " + accessResp.reason + "\n" + getWaktuDanTanggal() + "\nHari: " + getHari());
+    kirimPesan("Nama: " + nama_kartu + "\nKartu: " + kartu + "\nStatus: ACCESS GRANTED\n" + getWaktuDanTanggal() + "\nHari: " + getHari());
   } else {
-    Serial.println("Access denied: " + accessResp.reason);
+    Serial.println("Access DENIED: Kartu tidak terdaftar");
     salah();
-    kirimPesan("Kartu: " + kartu + "\nStatus: " + accessResp.reason + "\n" + getWaktuDanTanggal() + "\nHari: " + getHari());
+    kirimPesan("Kartu: " + kartu + "\nStatus: CARD NOT REGISTERED\n" + getWaktuDanTanggal() + "\nHari: " + getHari());
   }
 
   mfrc522.PICC_HaltA();
@@ -307,14 +300,24 @@ void salah() {
 
 //buka pintu: aktifkan relay selama lama_buka_pintu detik lalu kunci lagi
 void buka() {
+  Serial.println(">>> RELAY OPENING DOOR");
+  Serial.print("Setting RLY_PIN (");
+  Serial.print(RLY_PIN);
+  Serial.println(") to HIGH (ON)");
+  
   digitalWrite(RLY_PIN, RELAY_ON);   //high → relay aktif → maglock mati → TERBUKA
+  Serial.print("Relay state after ON: ");
+  Serial.println(digitalRead(RLY_PIN));
 
   unsigned long start = millis();
   while (millis() - start < (unsigned long)(lama_buka_pintu * 1000)) {
     ArduinoOTA.handle();
   }
 
+  Serial.println(">>> RELAY CLOSING DOOR");
   digitalWrite(RLY_PIN, RELAY_OFF);  //low → relay mati → maglock nyala → TERKUNCI
+  Serial.print("Relay state after OFF: ");
+  Serial.println(digitalRead(RLY_PIN));
 }
 
 String urlEncode(String str) {
