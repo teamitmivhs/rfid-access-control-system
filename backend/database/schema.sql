@@ -64,8 +64,8 @@ INSERT INTO users (uid, nama, is_admin) VALUES
 -- Regular users (scheduled access)
 INSERT INTO users (uid, nama, is_admin) VALUES
 ('B9899911', 'DANI', FALSE),
-('F3B812BA', 'FIKRI', FALSE),
-('43358A01', 'GANI', FALSE),
+('B9C87112', 'IHSAN', FALSE),
+('D36C4605', 'FAAIZ', FALSE),
 ('12988D8B', 'GHONI', FALSE),
 ('46D722BC', 'USER7', FALSE),
 ('B6C7FEBB', 'USER8', FALSE),
