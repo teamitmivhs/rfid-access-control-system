@@ -2,6 +2,11 @@ package handlers
 
 import (
 	"database/sql"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -9,97 +14,281 @@ import (
 	"gopkg.in/telebot.v3"
 )
 
+// TelegramConfig: Konfigurasi bot yang dibaca dari tabel settings di database
+type TelegramConfig struct {
+	Token   string
+	ChatID  string
+	Enabled bool
+}
+
+// GetTelegramConfig: Baca token dan chat_id dari tabel settings
+// Ini adalah fungsi kunci yang menghubungkan server ke bot Telegram.
+// Token dan chat_id disimpan di database (bukan hardcode), sehingga
+// bisa diubah tanpa perlu recompile server.
+func GetTelegramConfig(db *sql.DB) (*TelegramConfig, error) {
+	cfg := &TelegramConfig{}
+
+	rows, err := db.Query(
+		"SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('telegram_token', 'telegram_chat_id', 'telegram_enabled')",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query telegram settings: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			continue
+		}
+		switch key {
+		case "telegram_token":
+			cfg.Token = value
+		case "telegram_chat_id":
+			cfg.ChatID = value
+		case "telegram_enabled":
+			cfg.Enabled = value == "true"
+		}
+	}
+
+	if cfg.Token == "" {
+		return nil, fmt.Errorf("telegram_token belum diisi di tabel settings")
+	}
+	if cfg.ChatID == "" {
+		return nil, fmt.Errorf("telegram_chat_id belum diisi di tabel settings")
+	}
+
+	return cfg, nil
+}
+
+// KirimNotifikasi: Kirim pesan ke grup Telegram dari sisi server.
+// Dipakai untuk notifikasi akses pintu, perubahan jadwal, dll.
+// Menggunakan HTTP langsung (bukan telebot) agar bisa dipanggil
+// dari handler mana pun tanpa perlu instance bot.
+func KirimNotifikasi(cfg *TelegramConfig, pesan string) error {
+	if !cfg.Enabled {
+		return nil
+	}
+
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", cfg.Token)
+
+	resp, err := http.PostForm(apiURL, url.Values{
+		"chat_id": {cfg.ChatID},
+		"text":    {pesan},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to send telegram message: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("telegram API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+// SetJadwalHandler: Handle command /setjadwal dari bot Telegram
+// Format: /setjadwal [hari] [nama1, nama2, ...]
+// Contoh: /setjadwal senin ALVARO, AKBAR, JEKI
 func SetJadwalHandler(db *sql.DB, c telebot.Context) error {
-	// Parse: /setjadwal senin ALVARO, FIKRI, GANI
 	text := c.Text()
 	parts := strings.Fields(text)
 
 	if len(parts) < 3 {
-		return c.Send("❌ Format salah!\nGunakan: /setjadwal [hari] [nama1, nama2, ...]\n\nContoh: /setjadwal senin ALVARO, FIKRI, GANI")
+		return c.Send(
+			"❌ Format salah!\n" +
+				"Gunakan: /setjadwal [hari] [nama1, nama2, ...]\n\n" +
+				"Contoh: /setjadwal senin ALVARO, AKBAR, JEKI\n\n" +
+				"Hari yang valid: Senin, Selasa, Rabu, Kamis, Jumat",
+		)
 	}
 
-	hari := strings.ToUpper(parts[1][:1]) + strings.ToLower(parts[1][1:]) // Capitalize first letter
+	hariRaw := parts[1]
+	hari := strings.ToUpper(hariRaw[:1]) + strings.ToLower(hariRaw[1:])
+
+	// Hanya Senin-Jumat (sesuai ENUM di schema.sql)
+	validDays := map[string]bool{
+		"Senin": true, "Selasa": true, "Rabu": true, "Kamis": true, "Jumat": true,
+	}
+	if !validDays[hari] {
+		return c.Send("❌ Hari tidak valid: " + hari + "\nGunakan: Senin, Selasa, Rabu, Kamis, atau Jumat")
+	}
+
 	namesStr := strings.Join(parts[2:], " ")
 	names := strings.Split(namesStr, ",")
 
-	// Validasi hari
-	validDays := []string{"Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"}
-	valid := false
-	for _, day := range validDays {
-		if hari == day {
-			valid = true
-			break
-		}
-	}
-	if !valid {
-		return c.Send("❌ Hari tidak valid!\nGunakan: Senin, Selasa, Rabu, Kamis, Jumat, Sabtu, Minggu")
-	}
-
-	// Hapus schedule lama untuk hari itu
 	_, err := db.Exec("DELETE FROM schedules WHERE hari = ?", hari)
 	if err != nil {
 		return c.Send("❌ Error menghapus jadwal lama: " + err.Error())
 	}
 
-	insertedCount := 0
-	notFoundCount := 0
+	insertedNames := []string{}
+	notFoundNames := []string{}
 
-	// Insert jadwal baru
 	for _, name := range names {
 		name = strings.TrimSpace(name)
 		if name == "" || name == "-" || strings.ToLower(name) == "kosong" {
 			continue
 		}
+		nameUpper := strings.ToUpper(name)
 
-		nameLower := strings.ToUpper(name)
-
-		// Cari user_id berdasarkan nama
 		var userID int
-		err := db.QueryRow("SELECT id FROM users WHERE UPPER(nama) = ?", nameLower).Scan(&userID)
+		err := db.QueryRow(
+			"SELECT id FROM users WHERE UPPER(nama) = ? AND is_active = TRUE AND is_admin = FALSE",
+			nameUpper,
+		).Scan(&userID)
 		if err != nil {
-			notFoundCount++
+			notFoundNames = append(notFoundNames, nameUpper)
 			continue
 		}
 
 		_, err = db.Exec("INSERT INTO schedules (user_id, hari) VALUES (?, ?)", userID, hari)
 		if err == nil {
-			insertedCount++
+			insertedNames = append(insertedNames, nameUpper)
 		}
 	}
 
-	// Build response message
-	response := "✓ Jadwal " + hari + " berhasil diupdate!\n\n"
-	response += "📊 Summary:\n"
-	response += "✅ Ditambahkan: " + strconv.Itoa(insertedCount) + " orang\n"
-
-	if notFoundCount > 0 {
-		response += "⚠️  Tidak ditemukan: " + strconv.Itoa(notFoundCount) + " orang"
+	// Build response
+	response := "✅ Jadwal " + hari + " berhasil diupdate!\n\n"
+	response += "📋 Terjadwal (" + strconv.Itoa(len(insertedNames)) + " orang):\n"
+	if len(insertedNames) > 0 {
+		for _, n := range insertedNames {
+			response += "  • " + n + "\n"
+		}
+	} else {
+		response += "  (kosong)\n"
+	}
+	if len(notFoundNames) > 0 {
+		response += "\n⚠️  Tidak ditemukan di database (" + strconv.Itoa(len(notFoundNames)) + " orang):\n"
+		for _, n := range notFoundNames {
+			response += "  • " + n + "\n"
+		}
+		response += "\nPastikan nama sesuai yang ada di database."
 	}
 
 	return c.Send(response)
 }
 
-func StartTelegramBot(db *sql.DB, token string) error {
+// LihatJadwalHandler: Handle command /lihatjadwal
+// Format: /lihatjadwal [hari] atau /lihatjadwal (semua hari)
+func LihatJadwalHandler(db *sql.DB, c telebot.Context) error {
+	text := c.Text()
+	parts := strings.Fields(text)
+
+	hariFilter := ""
+	if len(parts) >= 2 {
+		hariRaw := parts[1]
+		hariFilter = strings.ToUpper(hariRaw[:1]) + strings.ToLower(hariRaw[1:])
+	}
+
+	validDays := []string{"Senin", "Selasa", "Rabu", "Kamis", "Jumat"}
+	daysToShow := validDays
+
+	if hariFilter != "" {
+		found := false
+		for _, d := range validDays {
+			if d == hariFilter {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return c.Send("❌ Hari tidak valid. Gunakan: Senin, Selasa, Rabu, Kamis, Jumat")
+		}
+		daysToShow = []string{hariFilter}
+	}
+
+	response := "📅 Jadwal Akses Pintu\n\n"
+	for _, hari := range daysToShow {
+		rows, err := db.Query(`
+			SELECT u.nama FROM users u
+			JOIN schedules s ON u.id = s.user_id
+			WHERE s.hari = ? AND u.is_active = TRUE
+			ORDER BY u.nama
+		`, hari)
+		if err != nil {
+			continue
+		}
+
+		var names []string
+		for rows.Next() {
+			var nama string
+			if rows.Scan(&nama) == nil {
+				names = append(names, nama)
+			}
+		}
+		rows.Close()
+
+		response += "📌 " + hari + " (" + strconv.Itoa(len(names)) + " orang):\n"
+		if len(names) == 0 {
+			response += "  (kosong)\n"
+		} else {
+			for _, n := range names {
+				response += "  • " + n + "\n"
+			}
+		}
+		response += "\n"
+	}
+
+	return c.Send(response)
+}
+
+// StartTelegramBot: Jalankan bot Telegram dengan token dari database.
+// Fungsi ini dipanggil saat server startup (di main.go).
+// Bot berjalan di goroutine terpisah agar tidak memblokir HTTP server.
+func StartTelegramBot(db *sql.DB) error {
+	// Baca config dari database — sumber tunggal kebenaran untuk token & chat_id
+	cfg, err := GetTelegramConfig(db)
+	if err != nil {
+		return fmt.Errorf("tidak bisa baca telegram config: %w", err)
+	}
+
+	if !cfg.Enabled {
+		log.Println("Telegram bot disabled di settings")
+		return nil
+	}
+
 	pref := telebot.Settings{
-		Token:  token,
+		Token:  cfg.Token,
 		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
 	}
 
 	b, err := telebot.NewBot(pref)
 	if err != nil {
-		return err
+		return fmt.Errorf("gagal buat bot: %w", err)
 	}
 
-	// Register command handler
 	b.Handle("/setjadwal", func(c telebot.Context) error {
 		return SetJadwalHandler(db, c)
 	})
 
-	// Simple ping handler
-	b.Handle("/start", func(c telebot.Context) error {
-		return c.Send("🤖 Bot jadwal pintu aktif!\n\nCommand: /setjadwal [hari] [nama1, nama2, ...]")
+	b.Handle("/lihatjadwal", func(c telebot.Context) error {
+		return LihatJadwalHandler(db, c)
 	})
 
-	b.Start()
+	b.Handle("/start", func(c telebot.Context) error {
+		return c.Send(
+			"🤖 Bot Jadwal Pintu Aktif!\n\n" +
+				"Commands:\n" +
+				"• /setjadwal [hari] [nama1, nama2, ...]\n" +
+				"  Contoh: /setjadwal senin ALVARO, AKBAR\n\n" +
+				"• /lihatjadwal [hari]\n" +
+				"  Contoh: /lihatjadwal senin\n" +
+				"  Atau /lihatjadwal untuk semua hari",
+		)
+	})
+
+	log.Println("✅ Telegram bot started, listening for commands...")
+
+	// Jalankan di goroutine agar tidak block HTTP server
+	go b.Start()
+
+	// Kirim notifikasi bahwa server online ke grup
+	if err := KirimNotifikasi(cfg, "🖥️ Door Lock Server online\n"+time.Now().Format("02-01-2006 15:04:05")); err != nil {
+		log.Println("Warning: gagal kirim notifikasi startup ke Telegram:", err)
+	}
+
 	return nil
 }

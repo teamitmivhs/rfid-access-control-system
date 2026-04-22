@@ -3,72 +3,55 @@ package main
 import (
 	"door-lock-system/config"
 	"door-lock-system/handlers"
-	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
-	"os"
 )
 
-// CORS middleware
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
-}
-
-// JSON response helper
-func jsonResponse(w http.ResponseWriter, status int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
-}
-
 func main() {
+	// 1. Koneksi ke database
 	db := config.InitDB()
 	defer db.Close()
 
-	// Setup Telegram Bot (run in goroutine)
-	botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
-	if botToken != "" {
-		go func() {
-			if err := handlers.StartTelegramBot(db, botToken); err != nil {
-				log.Printf("Telegram Bot Error: %v\n", err)
-			}
-		}()
-		log.Println("Telegram Bot started")
-	} else {
-		log.Println("⚠️  TELEGRAM_BOT_TOKEN not set - Bot disabled")
+	// 2. Jalankan Telegram bot
+	// Token & chat_id dibaca dari tabel settings di database — tidak hardcode di sini
+	if err := handlers.StartTelegramBot(db); err != nil {
+		// Jika bot gagal start, server tetap jalan (bot tidak wajib)
+		log.Println("⚠️  Telegram bot gagal start:", err)
 	}
 
-	// Setup routes
+	// 3. Register HTTP routes
 	mux := http.NewServeMux()
 
-	// API endpoints
+	// Verifikasi akses kartu RFID dari ESP32
 	mux.HandleFunc("/api/access/verify", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" {
-			jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
-			return
-		}
 		handlers.VerifyAccessHandler(db, w, r)
 	})
 
-	// Wrap dengan CORS middleware
-	httpHandler := corsMiddleware(mux)
+	// Sync kartu admin + scheduled untuk hari ini (endpoint lama, tetap ada)
+	mux.HandleFunc("/api/cards/today", func(w http.ResponseWriter, r *http.Request) {
+		handlers.GetCardsForTodayHandler(db, w, r)
+	})
 
-	// Start server
-	addr := ":8081"
-	log.Printf("Server running on %s\n", addr)
-	if err := http.ListenAndServe(addr, httpHandler); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	// Sync HANYA scheduled cards untuk hari ini (dipakai ESP32 sekarang)
+	mux.HandleFunc("/api/cards/scheduled-today", func(w http.ResponseWriter, r *http.Request) {
+		handlers.GetScheduledCardsForTodayHandler(db, w, r)
+	})
+
+	// Jadwal akses per user
+	mux.HandleFunc("/api/schedule", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			handlers.GetScheduleHandler(db, w, r)
+		case http.MethodPost:
+			handlers.UpdateScheduleHandler(db, w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	// 4. Jalankan HTTP server
+	log.Println("🚀 Server running on :8081")
+	if err := http.ListenAndServe(":8081", mux); err != nil {
+		log.Fatal("Server error:", err)
 	}
 }
