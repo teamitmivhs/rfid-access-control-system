@@ -128,7 +128,7 @@ void syncCardsFromServer() {
   Serial.println("\n🔄 Syncing scheduled cards from server...");
 
   HTTPClient http;
-  http.setTimeout(5000);
+  http.setTimeout(2000); // FIX: timeout diperkecil agar tidak ngeblok loop lama
   
   // BUG FIX: endpoint diganti ke /api/cards/scheduled-today
   // agar server hanya mengembalikan scheduled cards (bukan admin)
@@ -176,7 +176,7 @@ void syncCardsFromServer() {
   }
 
   serverCardCount = count;
-  lastSyncTime = millis();
+  // FIX: lastSyncTime sudah di-set di loop() sebelum fungsi ini dipanggil
 
   Serial.println("✓ Sync complete! " + String(serverCardCount) + " scheduled cards loaded for " + doc["hari"].as<String>());
 }
@@ -289,9 +289,11 @@ void setup() {
 void loop() {
   ArduinoOTA.handle();
 
-  // BUG FIX: guard interval cukup di sini saja (tidak duplikat di dalam fungsi)
+  // FIX: set lastSyncTime DULU sebelum sync, agar kalau gagal/timeout
+  // tidak langsung retry lagi di iterasi loop berikutnya
   if (WiFi.status() == WL_CONNECTED) {
     if (lastSyncTime == 0 || (millis() - lastSyncTime >= SYNC_INTERVAL)) {
+      lastSyncTime = millis();
       syncCardsFromServer();
     }
   }
