@@ -50,10 +50,11 @@ INSERT INTO settings (setting_key, setting_value) VALUES
 ('telegram_enabled', 'true'),
 ('telegram_token', '8683423891:AAFTBmo3owh5sA0MGPgvX5IpZv3lI7iFYFc'),
 ('telegram_chat_id', '-1003302843795'),
-('door_name', 'Main Door Lock');
+('door_name', 'Main Door Lock')
+ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value);
 
 -- Sample data: Admin users
-INSERT INTO users (uid, nama, is_admin) VALUES
+INSERT IGNORE INTO users (uid, nama, is_admin) VALUES
 ('938934FF', 'ALVARO', TRUE),
 ('2DCC8C8B', 'AKBAR', TRUE),
 ('83AE4305', 'JEKI', TRUE),
@@ -62,7 +63,7 @@ INSERT INTO users (uid, nama, is_admin) VALUES
 ('0284BB1B', 'FERI', TRUE);
 
 -- Regular users (scheduled access)
-INSERT INTO users (uid, nama, is_admin) VALUES
+INSERT IGNORE INTO users (uid, nama, is_admin) VALUES
 ('B9899911', 'DANI', FALSE),
 ('B9C87112', 'IHSAN', FALSE),
 ('D36C4605', 'FAAIZ', FALSE),
@@ -96,7 +97,7 @@ INSERT INTO users (uid, nama, is_admin) VALUES
 ('00000005', 'USER33', FALSE);
 
 -- Sample schedule
-INSERT INTO schedules (user_id, hari) VALUES
+INSERT IGNORE INTO schedules (user_id, hari) VALUES
 (7, 'Senin'), (7, 'Selasa'), (7, 'Rabu'), (7, 'Kamis'), (7, 'Jumat'),
 (8, 'Senin'), (8, 'Selasa'), (8, 'Rabu'), (8, 'Kamis'), (8, 'Jumat'),
 (9, 'Senin'), (9, 'Selasa'), (9, 'Rabu'), (9, 'Kamis'), (9, 'Jumat');
