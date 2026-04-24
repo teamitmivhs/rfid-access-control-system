@@ -111,7 +111,7 @@ Edit `backend/config/database.go`:
 ```go
 const (
     DBUser     = "root"
-    DBPassword = "your_password"
+    DBPassword = "root"
     DBHost     = "localhost"
     DBPort     = "3306"
     DBName     = "doorlock_db"
@@ -134,10 +134,10 @@ WHERE setting_key = 'telegram_chat_id';
 go build -o doorlock-server main.go
 
 # Run
-./doorlock-server
+./doorlock
 ```
 
-Backend akan berjalan di `http://localhost:8080`
+Backend akan berjalan di `http://localhost:8081`
 
 ---
 
