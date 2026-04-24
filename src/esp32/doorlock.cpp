@@ -242,17 +242,17 @@ void setup() {
   }
   Serial.println("*** Relay OK ***\n");
 
-  // Set static IP agar ESP32 selalu di subnet yang sama dengan server
+  //ESP32 static ip address
   IPAddress local_IP(192, 168, 107, 100);
-  IPAddress gateway(192, 168, 107, 1);
-  IPAddress subnet(255, 255, 255, 0);
+  IPAddress gateway(192, 168, 96, 1);
+  IPAddress subnet(255, 255, 240, 0);  // /20 subnet mask
   IPAddress dns(8, 8, 8, 8);
   if (!WiFi.config(local_IP, gateway, subnet, dns)) {
     Serial.println("WARNING: Failed to configure static IP, using DHCP");
   } else {
     Serial.println("Static IP configured: 192.168.107.100");
   }
-
+//ESP32 wifi conf begin
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED) {

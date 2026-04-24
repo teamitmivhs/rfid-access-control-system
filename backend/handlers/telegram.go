@@ -126,6 +126,7 @@ func SetJadwalHandler(db *sql.DB, c telebot.Context) error {
 
 	insertedNames := []string{}
 	notFoundNames := []string{}
+	adminSkippedNames := []string{}
 
 	for _, name := range names {
 		name = strings.TrimSpace(name)
@@ -135,12 +136,19 @@ func SetJadwalHandler(db *sql.DB, c telebot.Context) error {
 		nameUpper := strings.ToUpper(name)
 
 		var userID int
+		var isAdmin bool
 		err := db.QueryRow(
-			"SELECT id FROM users WHERE UPPER(nama) = ? AND is_active = TRUE AND is_admin = FALSE",
+			"SELECT id, is_admin FROM users WHERE UPPER(nama) = ? AND is_active = TRUE",
 			nameUpper,
-		).Scan(&userID)
+		).Scan(&userID, &isAdmin)
 		if err != nil {
 			notFoundNames = append(notFoundNames, nameUpper)
+			continue
+		}
+
+		// Skip jika user adalah admin
+		if isAdmin {
+			adminSkippedNames = append(adminSkippedNames, nameUpper)
 			continue
 		}
 
@@ -160,8 +168,14 @@ func SetJadwalHandler(db *sql.DB, c telebot.Context) error {
 	} else {
 		response += "  (kosong)\n"
 	}
+	if len(adminSkippedNames) > 0 {
+		response += "\n⚠️  Tidak perlu dijadwal (" + strconv.Itoa(len(adminSkippedNames)) + " orang - sudah admin):\n"
+		for _, n := range adminSkippedNames {
+			response += "  • " + n + " (tidak perlu ditambahkan, sudah menjadi admin dan bisa akses kapan saja)\n"
+		}
+	}
 	if len(notFoundNames) > 0 {
-		response += "\n⚠️  Tidak ditemukan di database (" + strconv.Itoa(len(notFoundNames)) + " orang):\n"
+		response += "\n❌ Tidak ditemukan di database (" + strconv.Itoa(len(notFoundNames)) + " orang):\n"
 		for _, n := range notFoundNames {
 			response += "  • " + n + "\n"
 		}
