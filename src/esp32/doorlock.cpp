@@ -252,7 +252,7 @@ void setup() {
   } else {
     Serial.println("Static IP configured: 192.168.107.100");
   }
-//ESP32 wifi conf begin
+//ESP32 wifi conf begin 
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED) {

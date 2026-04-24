@@ -249,6 +249,145 @@ func LihatJadwalHandler(db *sql.DB, c telebot.Context) error {
 	return c.Send(response)
 }
 
+// DeviceStatusHandler: Handle command /device
+// Menampilkan status perangkat ESP32 termasuk:
+// - Jenis perangkat (ESP32)
+// - Status online/offline
+// - Uptime
+// - Informasi sistem lainnya
+func DeviceStatusHandler(db *sql.DB, c telebot.Context) error {
+	// Baca device settings dari database
+	deviceSettings := make(map[string]string)
+	requiredSettings := []string{
+		"device_type", "device_name", "device_started_at",
+		"device_last_heartbeat", "relay_status", "door_name",
+	}
+
+	for _, key := range requiredSettings {
+		var value string
+		err := db.QueryRow(
+			"SELECT setting_value FROM settings WHERE setting_key = ?",
+			key,
+		).Scan(&value)
+		if err == nil {
+			deviceSettings[key] = value
+		}
+	}
+
+	// Set default values jika belum ada
+	if deviceSettings["device_type"] == "" {
+		deviceSettings["device_type"] = "ESP32"
+	}
+	if deviceSettings["device_name"] == "" {
+		deviceSettings["device_name"] = "RFID Door Lock System"
+	}
+	if deviceSettings["door_name"] == "" {
+		deviceSettings["door_name"] = "Main Door"
+	}
+
+	// Hitung uptime berdasarkan device_started_at
+	uptime := "Unknown"
+	if deviceSettings["device_started_at"] != "" {
+		startTime, err := time.Parse("2006-01-02 15:04:05", deviceSettings["device_started_at"])
+		if err == nil {
+			duration := time.Since(startTime)
+			days := int(duration.Hours() / 24)
+			hours := int(duration.Hours()) % 24
+			minutes := int(duration.Minutes()) % 60
+
+			if days > 0 {
+				uptime = fmt.Sprintf("%d hari %d jam %d menit", days, hours, minutes)
+			} else if hours > 0 {
+				uptime = fmt.Sprintf("%d jam %d menit", hours, minutes)
+			} else {
+				uptime = fmt.Sprintf("%d menit", minutes)
+			}
+		}
+	}
+
+	// Tentukan status device berdasarkan last heartbeat
+	deviceStatus := "🔴 OFFLINE"
+	lastHeartbeat := "Tidak ada data"
+	if deviceSettings["device_last_heartbeat"] != "" {
+		lastHeartbeatTime, err := time.Parse("2006-01-02 15:04:05", deviceSettings["device_last_heartbeat"])
+		if err == nil {
+			lastHeartbeat = lastHeartbeatTime.Format("02-01-2006 15:04:05")
+
+			// Jika last heartbeat kurang dari 5 menit yang lalu, status ONLINE
+			if time.Since(lastHeartbeatTime) < 5*time.Minute {
+				deviceStatus = "🟢 ONLINE"
+			} else if time.Since(lastHeartbeatTime) < 1*time.Hour {
+				deviceStatus = "🟡 IDLE (Terakhir aktif: " + fmt.Sprintf("%d menit", int(time.Since(lastHeartbeatTime).Minutes())) + " lalu)"
+			}
+		}
+	}
+
+	// Hitung total akses hari ini
+	var totalAccessToday int
+	today := time.Now().Format("2006-01-02")
+	err := db.QueryRow(
+		"SELECT COUNT(*) FROM access_logs WHERE DATE(waktu) = ?",
+		today,
+	).Scan(&totalAccessToday)
+	if err != nil {
+		totalAccessToday = 0
+	}
+
+	// Hitung access granted vs denied hari ini
+	var grantedToday, deniedToday int
+	db.QueryRow(
+		"SELECT COUNT(*) FROM access_logs WHERE DATE(waktu) = ? AND status = 'GRANTED'",
+		today,
+	).Scan(&grantedToday)
+	db.QueryRow(
+		"SELECT COUNT(*) FROM access_logs WHERE DATE(waktu) = ? AND status = 'DENIED'",
+		today,
+	).Scan(&deniedToday)
+
+	// Hitung total akses user
+	var totalUsers int
+	db.QueryRow("SELECT COUNT(*) FROM users WHERE is_active = TRUE").Scan(&totalUsers)
+
+	// Relay status
+	relayStatus := "Unknown"
+	if deviceSettings["relay_status"] != "" {
+		if deviceSettings["relay_status"] == "1" || deviceSettings["relay_status"] == "open" {
+			relayStatus = "🔓 Terbuka"
+		} else {
+			relayStatus = "🔒 Tertutup"
+		}
+	}
+
+	// Build response
+	response := "🖥️ STATUS PERANGKAT\\n"
+	response += "═════════════════════════════════════\\n\\n"
+
+	// Device Info
+	response += fmt.Sprintf("📱 Jenis Perangkat: %s\\n", deviceSettings["device_type"])
+	response += fmt.Sprintf("💻 Nama: %s\\n", deviceSettings["device_name"])
+	response += fmt.Sprintf("🚪 Pintu: %s\\n\\n", deviceSettings["door_name"])
+
+	// Status & Uptime
+	response += fmt.Sprintf("Status: %s\\n", deviceStatus)
+	response += fmt.Sprintf("⏱️ Uptime: %s\\n", uptime)
+	response += fmt.Sprintf("🔔 Terakhir Aktif: %s\\n\\n", lastHeartbeat)
+
+	// Door Status
+	response += fmt.Sprintf("🔐 Status Pintu: %s\\n\\n", relayStatus)
+
+	// Today Statistics
+	response += fmt.Sprintf("📊 Statistik Hari Ini (%s):\\n", today)
+	response += fmt.Sprintf("  ✅ Granted: %d akses\\n", grantedToday)
+	response += fmt.Sprintf("  ❌ Denied: %d akses\\n", deniedToday)
+	response += fmt.Sprintf("  📈 Total: %d akses\\n\\n", totalAccessToday)
+
+	// System Info
+	response += fmt.Sprintf("👥 Total User: %d (aktif)\\n", totalUsers)
+	response += fmt.Sprintf("⚙️ Server Time: %s", time.Now().Format("02-01-2006 15:04:05"))
+
+	return c.Send(response)
+}
+
 // StartTelegramBot: Jalankan bot Telegram dengan token dari database.
 // Fungsi ini dipanggil saat server startup (di main.go).
 // Bot berjalan di goroutine terpisah agar tidak memblokir HTTP server.
@@ -308,6 +447,8 @@ func StartTelegramBot(db *sql.DB) error {
 				"  Atau: /lihatjadwal (untuk semua hari)\n\n" +
 				"• /database\n" +
 				"  Lihat daftar pengguna dan UID dari database\n\n" +
+				"• /device\n" +
+				"  Lihat status dan informasi perangkat ESP\n\n" +
 				"• /help\n" +
 				"  Tampilkan bantuan ini",
 		)
@@ -379,6 +520,10 @@ func StartTelegramBot(db *sql.DB) error {
 		}
 
 		return c.Send(response)
+	})
+
+	b.Handle("/device", func(c telebot.Context) error {
+		return DeviceStatusHandler(db, c)
 	})
 
 	log.Println("✅ Telegram bot started, listening for commands...")
