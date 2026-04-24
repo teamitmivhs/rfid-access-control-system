@@ -359,33 +359,35 @@ func DeviceStatusHandler(db *sql.DB, c telebot.Context) error {
 	}
 
 	// Build response
-	response := "🖥️ STATUS PERANGKAT\\n"
-	response += "═════════════════════════════════════\\n\\n"
+	response := "🖥️ *STATUS PERANGKAT*\n"
+	response += "═══════════════════════════════════════\n\n"
 
 	// Device Info
-	response += fmt.Sprintf("📱 Jenis Perangkat: %s\\n", deviceSettings["device_type"])
-	response += fmt.Sprintf("💻 Nama: %s\\n", deviceSettings["device_name"])
-	response += fmt.Sprintf("🚪 Pintu: %s\\n\\n", deviceSettings["door_name"])
+	response += fmt.Sprintf("*📱 Jenis Perangkat:* %s\n", deviceSettings["device_type"])
+	response += fmt.Sprintf("*💻 Nama:* %s\n", deviceSettings["device_name"])
+	response += fmt.Sprintf("*🚪 Pintu:* %s\n\n", deviceSettings["door_name"])
 
 	// Status & Uptime
-	response += fmt.Sprintf("Status: %s\\n", deviceStatus)
-	response += fmt.Sprintf("⏱️ Uptime: %s\\n", uptime)
-	response += fmt.Sprintf("🔔 Terakhir Aktif: %s\\n\\n", lastHeartbeat)
-
-	// Door Status
-	response += fmt.Sprintf("🔐 Status Pintu: %s\\n\\n", relayStatus)
+	response += fmt.Sprintf("*Status Perangkat:* %s\n", deviceStatus)
+	response += fmt.Sprintf("*⏱️ Uptime:* %s\n", uptime)
+	response += fmt.Sprintf("*🔔 Terakhir Aktif:* %s\n", lastHeartbeat)
+	response += fmt.Sprintf("*🔐 Status Pintu:* %s\n\n", relayStatus)
 
 	// Today Statistics
-	response += fmt.Sprintf("📊 Statistik Hari Ini (%s):\\n", today)
-	response += fmt.Sprintf("  ✅ Granted: %d akses\\n", grantedToday)
-	response += fmt.Sprintf("  ❌ Denied: %d akses\\n", deniedToday)
-	response += fmt.Sprintf("  📈 Total: %d akses\\n\\n", totalAccessToday)
+	response += "*📊 Statistik Hari Ini*\n"
+	response += fmt.Sprintf("Tanggal: `%s`\n\n", today)
+	response += fmt.Sprintf("✅ *Granted:* %d akses\n", grantedToday)
+	response += fmt.Sprintf("❌ *Denied:* %d akses\n", deniedToday)
+	response += fmt.Sprintf("📈 *Total:* %d akses\n\n", totalAccessToday)
 
 	// System Info
-	response += fmt.Sprintf("👥 Total User: %d (aktif)\\n", totalUsers)
-	response += fmt.Sprintf("⚙️ Server Time: %s", time.Now().Format("02-01-2006 15:04:05"))
+	response += fmt.Sprintf("*👥 Total User Aktif:* %d\n", totalUsers)
+	response += fmt.Sprintf("*⚙️ Server Time:* `%s`", time.Now().Format("02-01-2006 15:04:05"))
 
-	return c.Send(response)
+	// Send dengan Markdown parsing
+	return c.Send(response, &telebot.SendOptions{
+		ParseMode: telebot.ModeMarkdown,
+	})
 }
 
 // StartTelegramBot: Jalankan bot Telegram dengan token dari database.
