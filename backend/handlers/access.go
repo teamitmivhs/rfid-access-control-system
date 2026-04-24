@@ -251,3 +251,59 @@ func GetScheduledCardsForTodayHandler(db *sql.DB, w http.ResponseWriter, r *http
 		"count": len(cards),
 	})
 }
+
+// DeviceHeartbeatRequest: Struktur untuk heartbeat dari ESP32
+type DeviceHeartbeatRequest struct {
+	DeviceType   string `json:"device_type"`   // e.g., "ESP32"
+	DeviceName   string `json:"device_name"`   // e.g., "RFID Door Lock"
+	RelayStatus  string `json:"relay_status"`  // "0" (closed) atau "1" (open)
+	WiFiStrength int    `json:"wifi_strength"` // RSSI value
+	FreeMemory   int    `json:"free_memory"`   // Available heap memory
+	Uptime       int64  `json:"uptime"`        // Uptime in seconds
+}
+
+// DeviceHeartbeatHandler: Handle heartbeat/status update dari ESP32
+// Endpoint: POST /api/device/heartbeat
+// Fungsi ini memperbarui status perangkat di tabel settings
+func DeviceHeartbeatHandler(db *sql.DB, w http.ResponseWriter, r *http.Request) {
+	var req DeviceHeartbeatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonResponse(w, http.StatusBadRequest, models.ErrorResponse{Error: "Invalid request body"})
+		return
+	}
+
+	// Update device settings di database
+	settingsToUpdate := map[string]string{
+		"device_type":           req.DeviceType,
+		"device_name":           req.DeviceName,
+		"relay_status":          req.RelayStatus,
+		"device_last_heartbeat": time.Now().Format("2006-01-02 15:04:05"),
+	}
+
+	// Jika device_started_at belum ada, set sekarang
+	var startedAt string
+	err := db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = 'device_started_at'").Scan(&startedAt)
+	if err != nil || startedAt == "" {
+		db.Exec("INSERT INTO settings (setting_key, setting_value) VALUES ('device_started_at', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)",
+			time.Now().Format("2006-01-02 15:04:05"))
+	}
+
+	// Update semua settings
+	for key, value := range settingsToUpdate {
+		_, err := db.Exec(
+			"INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)",
+			key, value,
+		)
+		if err != nil {
+			log.Println("Error updating setting "+key+":", err)
+		}
+	}
+
+	// Log successful heartbeat
+	log.Printf("✅ Device heartbeat received: %s (WiFi: %d dBm, Memory: %d bytes)", req.DeviceName, req.WiFiStrength, req.FreeMemory)
+
+	jsonResponse(w, http.StatusOK, map[string]string{
+		"status":  "ok",
+		"message": "Heartbeat received",
+	})
+}
