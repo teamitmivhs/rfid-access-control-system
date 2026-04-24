@@ -49,6 +49,15 @@ func main() {
 		}
 	})
 
+	// Device heartbeat - status update dari ESP32
+	mux.HandleFunc("/api/device/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			handlers.DeviceHeartbeatHandler(db, w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
 	// 4. Jalankan HTTP server
 	log.Println("🚀 Server running on :8081")
 	if err := http.ListenAndServe(":8081", mux); err != nil {
