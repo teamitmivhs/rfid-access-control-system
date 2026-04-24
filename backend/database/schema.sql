@@ -50,7 +50,12 @@ INSERT INTO settings (setting_key, setting_value) VALUES
 ('telegram_enabled', 'true'),
 ('telegram_token', '8683423891:AAFTBmo3owh5sA0MGPgvX5IpZv3lI7iFYFc'),
 ('telegram_chat_id', '-1003302843795'),
-('door_name', 'Main Door Lock')
+('door_name', 'Main Door Lock'),
+('device_type', 'ESP32'),
+('device_name', 'RFID Door Lock System'),
+('device_started_at', NOW()),
+('device_last_heartbeat', NOW()),
+('relay_status', '0')
 ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value);
 
 -- Sample data: Admin users
