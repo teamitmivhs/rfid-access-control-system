@@ -53,8 +53,7 @@ bool relay_is_active              = false;
 const unsigned long DEBOUNCE_DELAY = 50;
 const unsigned long RELAY_HOLD_TIME = 2000;
 
-// ===== ADMIN CARDS (Always allowed, offline-first) =====
-// BUG FIX: jumlah_kartu harus sesuai jumlah kartu yang benar-benar ada (6, bukan 36)
+//kartu admin (Always allowed)
 const int jumlah_kartu = 36;
 const String daftarUID[jumlah_kartu] = {
   "938934FF",  // ALVARO
@@ -74,9 +73,7 @@ const String daftarNama[jumlah_kartu] = {
   "FERI (ADMIN)",
 };
 
-// ===== SERVER CARDS (Dynamic, synced every hour) =====
-// BUG FIX: endpoint /api/cards/today sekarang hanya mengembalikan scheduled cards saja
-// (bukan admin cards), karena admin sudah di-handle secara lokal di atas
+//kartu yang diambil dari server
 const int MAX_SERVER_CARDS = 100;
 String serverCardUID[MAX_SERVER_CARDS];
 String serverCardNama[MAX_SERVER_CARDS];
@@ -244,6 +241,17 @@ void setup() {
     }
   }
   Serial.println("*** Relay OK ***\n");
+
+  // Set static IP agar ESP32 selalu di subnet yang sama dengan server
+  IPAddress local_IP(192, 168, 107, 100);
+  IPAddress gateway(192, 168, 107, 1);
+  IPAddress subnet(255, 255, 255, 0);
+  IPAddress dns(8, 8, 8, 8);
+  if (!WiFi.config(local_IP, gateway, subnet, dns)) {
+    Serial.println("WARNING: Failed to configure static IP, using DHCP");
+  } else {
+    Serial.println("Static IP configured: 192.168.107.100");
+  }
 
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi");
