@@ -276,8 +276,95 @@ func StartTelegramBot(db *sql.DB) error {
 				"  Contoh: /setjadwal senin ALVARO, AKBAR\n\n" +
 				"• /lihatjadwal [hari]\n" +
 				"  Contoh: /lihatjadwal senin\n" +
-				"  Atau /lihatjadwal untuk semua hari",
+				"  Atau /lihatjadwal untuk semua hari\n\n" +
+				"• /help - Lihat daftar lengkap commands\n\n" +
+				"• /database - Lihat daftar pengguna & UID",
 		)
+	})
+
+	b.Handle("/help", func(c telebot.Context) error {
+		return c.Send(
+			"📖 Daftar Commands:\n\n" +
+				"• /setjadwal [hari] [nama1, nama2, ...]\n" +
+				"  Set jadwal akses untuk hari tertentu\n" +
+				"  Contoh: /setjadwal senin ALVARO, AKBAR\n\n" +
+				"• /lihatjadwal [hari]\n" +
+				"  Lihat jadwal akses\n" +
+				"  Contoh: /lihatjadwal senin\n" +
+				"  Atau: /lihatjadwal (untuk semua hari)\n\n" +
+				"• /database\n" +
+				"  Lihat daftar pengguna dan UID dari database\n\n" +
+				"• /help\n" +
+				"  Tampilkan bantuan ini",
+		)
+	})
+
+	b.Handle("/database", func(c telebot.Context) error {
+		// Query admin users
+		adminRows, err := db.Query("SELECT nama, uid FROM users WHERE is_admin = TRUE ORDER BY nama")
+		if err != nil {
+			return c.Send("❌ Error querying admin users: " + err.Error())
+		}
+		defer adminRows.Close()
+
+		var adminUsers []struct {
+			Nama string
+			UID  string
+		}
+		for adminRows.Next() {
+			var nama, uid string
+			if err := adminRows.Scan(&nama, &uid); err != nil {
+				continue
+			}
+			adminUsers = append(adminUsers, struct {
+				Nama string
+				UID  string
+			}{nama, uid})
+		}
+
+		// Query non-admin users
+		userRows, err := db.Query("SELECT nama, uid FROM users WHERE is_admin = FALSE ORDER BY nama")
+		if err != nil {
+			return c.Send("❌ Error querying users: " + err.Error())
+		}
+		defer userRows.Close()
+
+		var regularUsers []struct {
+			Nama string
+			UID  string
+		}
+		for userRows.Next() {
+			var nama, uid string
+			if err := userRows.Scan(&nama, &uid); err != nil {
+				continue
+			}
+			regularUsers = append(regularUsers, struct {
+				Nama string
+				UID  string
+			}{nama, uid})
+		}
+
+		// Build response
+		response := "📊 DATABASE USERS\n\n"
+		response += "👑 ADMIN (" + strconv.Itoa(len(adminUsers)) + " orang):\n"
+		if len(adminUsers) == 0 {
+			response += "  (kosong)\n"
+		} else {
+			for _, user := range adminUsers {
+				response += "  • " + user.Nama + " → " + user.UID + "\n"
+			}
+		}
+
+		response += "\n👤 REGULAR (" + strconv.Itoa(len(regularUsers)) + " orang):\n"
+		if len(regularUsers) == 0 {
+			response += "  (kosong)\n"
+		} else {
+			for _, user := range regularUsers {
+				response += "  • " + user.Nama + " → " + user.UID + "\n"
+			}
+		}
+
+		return c.Send(response)
 	})
 
 	log.Println("✅ Telegram bot started, listening for commands...")
