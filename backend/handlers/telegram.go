@@ -360,7 +360,6 @@ func DeviceStatusHandler(db *sql.DB, c telebot.Context) error {
 
 	// Build response
 	response := "🖥️ *STATUS PERANGKAT*\n"
-	response += "═══════════════════════════════════════\n\n"
 
 	// Device Info
 	response += fmt.Sprintf("*📱 Jenis Perangkat:* %s\n", deviceSettings["device_type"])
