@@ -433,7 +433,8 @@ func StartTelegramBot(db *sql.DB) error {
 				"  Contoh: /lihatjadwal senin\n" +
 				"  Atau /lihatjadwal untuk semua hari\n\n" +
 				"• /help - Lihat daftar lengkap commands\n\n" +
-				"• /database - Lihat daftar pengguna & UID",
+				"• /database - Lihat daftar pengguna & UID\n\n" +
+				"• /status - Lihat status perangkat ESP",
 		)
 	})
 
@@ -449,7 +450,7 @@ func StartTelegramBot(db *sql.DB) error {
 				"  Atau: /lihatjadwal (untuk semua hari)\n\n" +
 				"• /database\n" +
 				"  Lihat daftar pengguna dan UID dari database\n\n" +
-				"• /device\n" +
+				"• /status\n" +
 				"  Lihat status dan informasi perangkat ESP\n\n" +
 				"• /help\n" +
 				"  Tampilkan bantuan ini",
