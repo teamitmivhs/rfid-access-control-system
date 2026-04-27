@@ -524,7 +524,7 @@ func StartTelegramBot(db *sql.DB) error {
 		return c.Send(response)
 	})
 
-	b.Handle("/device", func(c telebot.Context) error {
+	b.Handle("/status", func(c telebot.Context) error {
 		return DeviceStatusHandler(db, c)
 	})
 
