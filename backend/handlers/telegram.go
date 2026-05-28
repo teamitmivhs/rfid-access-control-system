@@ -452,11 +452,30 @@ func StartTelegramBot(db *sql.DB) error {
 		msg := "📖 Daftar Commands:\n\n" +
 			"• /daftar\n  Daftarkan kartu baru (ikuti instruksi: tap kartu lalu balas dengan NAMA tanpa '/')\n\n" +
 			"• /daftaradmin\n  Daftarkan kartu admin (tap kartu lalu balas dengan NAMA tanpa '/')\n\n" +
+			"• /daftarnama <NAMA>\n  Selesaikan pendaftaran langsung di grup saat privacy mode aktif (contoh: /daftarnama NAUFAL)\n\n" +
+			"• /cara\n  Tampilkan langkah-langkah dan detail teknis pendaftaran serta verifikasi (DB, bot, perangkat)\n\n" +
 			"• /setjadwal [hari] [nama1, nama2, ...]\n  Set jadwal akses untuk hari tertentu\n\n" +
 			"• /lihatjadwal [hari]\n  Lihat jadwal akses (atau tanpa argumen untuk semua hari)\n\n" +
 			"• /database\n  Lihat daftar pengguna dan UID dari database\n\n" +
 			"• /status\n  Lihat status dan informasi perangkat ESP\n\n" +
 			"• /sync\n  Sync kartu ke ESP32 segera\n"
+		return c.Send(msg)
+	})
+
+	// Cara: langkah-langkah dan teknis pendaftaran
+	b.Handle("/cara", func(c telebot.Context) error {
+		msg := "📘 Cara pendaftaran kartu (ringkas):\n\n" +
+			"1) Di grup atau DM, jalankan /daftar — bot akan membuat entry pending untuk Anda.\n" +
+			"2) Tap kartu pada perangkat (ESP32) — perangkat akan POST ke server dengan UID.\n" +
+			"3) Jika bot menerima UID, balas dengan nama: di DM cukup ketik nama saja; di grup (jika privacy ON) gunakan:\n" +
+			"   /daftarnama NAMA  (contoh: /daftarnama AIRA)\n" +
+			"4) Server akan simpan ke tabel users dan menghapus pending.\n\n" +
+			"Detail teknis & verifikasi: \n" +
+			"- Pastikan token bot tersimpan di tabel settings (telegram_token) dan bot sudah join grup.\n" +
+			"- Jika Anda lihat error 400 'chat not found', periksa bahwa chat_id benar dan bot masih member.\n" +
+			"- Periksa DB: SELECT * FROM registration_pending; dan SELECT * FROM users WHERE uid = '...';\n" +
+			"- Jika privacy bot aktif, gunakan /daftarnama. Untuk mematikan privacy, gunakan BotFather /setprivacy.\n\n" +
+			"Butuh bantuan lebih lanjut? Kirim log server (20 baris) dan snapshot tabel registration_pending."
 		return c.Send(msg)
 	})
 
@@ -488,6 +507,9 @@ func StartTelegramBot(db *sql.DB) error {
 			return c.Send("❌ Gagal menyimpan registrasi: " + err.Error())
 		}
 	})
+
+	// /cara handler for webhook-equivalent requests (helpful if using webhook instead of polling)
+	// Note: StartTelegramBot uses polling; webhook endpoint has its own /cara handling via TelegramWebhookHandler.
 
 	b.Handle("/setjadwal", func(c telebot.Context) error {
 		text := strings.TrimSpace(c.Text())
