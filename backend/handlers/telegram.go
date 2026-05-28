@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"gopkg.in/telebot.v3"
 )
 
 // TelegramUpdate: Struktur untuk menerima update dari Telegram
@@ -204,9 +206,32 @@ func StartTelegramBot(db *sql.DB) error {
 		return nil
 	}
 
-	// Server menggunakan webhook handler (/telegram/webhook).
-	// Tidak perlu membuat long-polling bot di sini; cukup log konfigurasi.
-	log.Println("Telegram configured (webhook). Token present; webhook endpoint aktif if configured.")
+	pref := telebot.Settings{
+		Token:  token,
+		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
+	}
+
+	b, err := telebot.NewBot(pref)
+	if err != nil {
+		return fmt.Errorf("gagal buat telebot: %w", err)
+	}
+
+	// Register simple command handlers that call existing helpers
+	b.Handle("/sync", func(c telebot.Context) error {
+		chatID := int(c.Chat().ID)
+		go handleSyncCommand(db, token, chatID)
+		return c.Send("🔄 Sync dipicu — ESP akan sync pada loop berikutnya")
+	})
+
+	b.Handle("/status", func(c telebot.Context) error {
+		chatID := int(c.Chat().ID)
+		go handleStatusCommand(db, token, chatID)
+		return c.Send("⏳ Mengambil status...")
+	})
+
+	// Start polling in background
+	go b.Start()
+	log.Println("✅ Telegram bot polling started")
 	return nil
 }
 
