@@ -291,11 +291,12 @@ void setup() {
     Serial.println("RFID OK");
   }
 
-  IPAddress local_IP(192, 168, 107, 100);
-  IPAddress gateway(192, 168, 96, 1);
-  IPAddress subnet(255, 255, 240, 0);
-  IPAddress dns(8, 8, 8, 8);
-  WiFi.config(local_IP, gateway, subnet, dns);
+  // Use DHCP by default. If you need a static IP, set correct gateway/subnet
+  // IPAddress local_IP(192, 168, 107, 100);
+  // IPAddress gateway(192, 168, 107, 1);
+  // IPAddress subnet(255, 255, 255, 0);
+  // IPAddress dns(8, 8, 8, 8);
+  // WiFi.config(local_IP, gateway, subnet, dns);
 
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi");
@@ -331,6 +332,49 @@ void setup() {
 
 void loop() {
   ArduinoOTA.handle();
+  
+  static unsigned long lastReconnectAttempt = 0;
+  static int reconnectFailCount = 0;
+  // If disconnected, try reconnecting every 5 seconds with more diagnostics
+  if (WiFi.status() != WL_CONNECTED) {
+    if (millis() - lastReconnectAttempt > 5000) {
+      lastReconnectAttempt = millis();
+      Serial.println("WiFi disconnected, attempting reconnect...");
+
+      // Try a light reconnect first
+      WiFi.reconnect();
+      delay(1000);
+      int st = WiFi.status();
+      Serial.print("WiFi.status after reconnect(): "); Serial.println(st);
+
+      if (st == WL_CONNECTED) {
+        reconnectFailCount = 0;
+        Serial.print("Reconnected, RSSI: "); Serial.println(WiFi.RSSI());
+      } else {
+        reconnectFailCount++;
+        Serial.print("Reconnect attempt failed (#"); Serial.print(reconnectFailCount); Serial.println(")");
+        // If many consecutive failures, try a fresh begin
+        if (reconnectFailCount >= 3) {
+          Serial.println("Reconnect failing repeatedly, calling WiFi.disconnect() then WiFi.begin()...");
+          WiFi.disconnect(true);
+          delay(500);
+          WiFi.begin(ssid, password);
+          delay(2000);
+          if (WiFi.status() == WL_CONNECTED) {
+            reconnectFailCount = 0;
+            Serial.print("Reconnected after fresh begin, RSSI: "); Serial.println(WiFi.RSSI());
+          }
+        }
+
+        // If still failing many times, restart the MCU as last resort
+        if (reconnectFailCount >= 10) {
+          Serial.println("Too many reconnect failures, restarting ESP...");
+          delay(200);
+          ESP.restart();
+        }
+      }
+    }
+  }
 
   // === SCHEDULED SYNC (1 jam sekali) ===
   if (WiFi.status() == WL_CONNECTED) {
@@ -485,17 +529,23 @@ void kirimPesan(String pesan) {
 
   for (int attempt = 1; attempt <= 3; attempt++) {
     Serial.println("Telegram attempt " + String(attempt));
-    
+
+    WiFiClientSecure client;
+    client.setInsecure(); // accept any certificate (optional: pin certificate)
     HTTPClient http;
     http.setTimeout(10000);
-    
+
     String url = "https://api.telegram.org/bot" + BOT_TOKEN + "/sendMessage";
-    http.begin(url);
+    if (!http.begin(client, url)) {
+      Serial.println("❌ HTTP begin failed (HTTPS)");
+      if (attempt < 3) delay(2000);
+      continue;
+    }
     http.addHeader("Content-Type", "application/x-www-form-urlencoded");
 
     String data = "chat_id=" + CHAT_ID + "&text=" + urlEncode(pesan);
     int httpResponseCode = http.POST(data);
-    
+
     Serial.print("HTTP Response: "); Serial.println(httpResponseCode);
     http.end();
 
