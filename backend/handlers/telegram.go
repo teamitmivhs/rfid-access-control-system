@@ -2,541 +2,240 @@ package handlers
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
 	"time"
-
-	"gopkg.in/telebot.v3"
 )
 
-// TelegramConfig: Konfigurasi bot yang dibaca dari tabel settings di database
-type TelegramConfig struct {
-	Token   string
-	ChatID  string
-	Enabled bool
+// TelegramUpdate: Struktur untuk menerima update dari Telegram
+type TelegramUpdate struct {
+	UpdateID int `json:"update_id"`
+	Message  struct {
+		MessageID int `json:"message_id"`
+		From      struct {
+			ID   int    `json:"id"`
+			Name string `json:"first_name"`
+		} `json:"from"`
+		Chat struct {
+			ID   int    `json:"id"`
+			Type string `json:"type"`
+		} `json:"chat"`
+		Text string `json:"text"`
+		Date int64  `json:"date"`
+	} `json:"message"`
 }
 
-// GetTelegramConfig: Baca token dan chat_id dari tabel settings
-// Ini adalah fungsi kunci yang menghubungkan server ke bot Telegram.
-// Token dan chat_id disimpan di database (bukan hardcode), sehingga
-// bisa diubah tanpa perlu recompile server.
-func GetTelegramConfig(db *sql.DB) (*TelegramConfig, error) {
-	cfg := &TelegramConfig{}
+// TelegramResponse: Response untuk kirim ke Telegram
+type TelegramResponse struct {
+	OK     bool                   `json:"ok"`
+	Result map[string]interface{} `json:"result,omitempty"`
+	Error  string                 `json:"error_description,omitempty"`
+}
 
-	rows, err := db.Query(
-		"SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('telegram_token', 'telegram_chat_id', 'telegram_enabled')",
+// TelegramWebhookHandler: Handle incoming updates dari Telegram
+// Endpoint: POST /telegram/webhook
+func TelegramWebhookHandler(db *sql.DB, botToken string, w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "Failed to read body"})
+		return
+	}
+
+	var update TelegramUpdate
+	if err := json.Unmarshal(body, &update); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "Invalid JSON"})
+		return
+	}
+
+	// Abaikan jika bukan message
+	if update.Message.Text == "" {
+		jsonResponse(w, http.StatusOK, map[string]string{"status": "ignored"})
+		return
+	}
+
+	text := strings.TrimSpace(update.Message.Text)
+	chatID := update.Message.Chat.ID
+
+	// Parse command
+	if strings.HasPrefix(text, "/sync") {
+		handleSyncCommand(db, botToken, chatID)
+		jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+
+	if strings.HasPrefix(text, "/status") {
+		handleStatusCommand(db, botToken, chatID)
+		jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+
+	// Unknown command
+	sendTelegramMessage(botToken, chatID, "❓ Command tidak dikenal. Gunakan:\n/sync - Sync kartu dari database\n/status - Lihat status pintu")
+	jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleSyncCommand: Handle /sync command
+func handleSyncCommand(db *sql.DB, botToken string, chatID int) {
+	// Set sync pending flag di database
+	query := `
+		INSERT INTO settings (setting_key, setting_value) 
+		VALUES ('sync_pending', 'true') 
+		ON DUPLICATE KEY UPDATE setting_value = 'true'
+	`
+	_, err := db.Exec(query)
+	if err != nil {
+		log.Println("❌ Error setting sync_pending:", err)
+		sendTelegramMessage(botToken, chatID, "❌ Error: Gagal set sync flag")
+		return
+	}
+
+	// Also record timestamp kapan sync di-request
+	query2 := `
+		INSERT INTO settings (setting_key, setting_value) 
+		VALUES ('sync_requested_at', ?) 
+		ON DUPLICATE KEY UPDATE setting_value = ?
+	`
+	now := time.Now().Format("2006-01-02 15:04:05")
+	_, err = db.Exec(query2, now, now)
+	if err != nil {
+		log.Println("⚠️  Warning: Gagal record sync timestamp:", err)
+	}
+
+	message := fmt.Sprintf(
+		"🔄 SYNC DIPICU\nESP32 akan sync kartu pada loop berikutnya\nWaktu: %s",
+		time.Now().Format("15:04:05"),
 	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query telegram settings: %w", err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var key, value string
-		if err := rows.Scan(&key, &value); err != nil {
-			continue
-		}
-		switch key {
-		case "telegram_token":
-			cfg.Token = value
-		case "telegram_chat_id":
-			cfg.ChatID = value
-		case "telegram_enabled":
-			cfg.Enabled = value == "true"
-		}
-	}
-
-	if cfg.Token == "" {
-		return nil, fmt.Errorf("telegram_token belum diisi di tabel settings")
-	}
-	if cfg.ChatID == "" {
-		return nil, fmt.Errorf("telegram_chat_id belum diisi di tabel settings")
-	}
-
-	return cfg, nil
+	sendTelegramMessage(botToken, chatID, message)
+	log.Println("✅ /sync command received - sync_pending set to true")
 }
 
-// KirimNotifikasi: Kirim pesan ke grup Telegram dari sisi server.
-// Dipakai untuk notifikasi akses pintu, perubahan jadwal, dll.
-// Menggunakan HTTP langsung (bukan telebot) agar bisa dipanggil
-// dari handler mana pun tanpa perlu instance bot.
-func KirimNotifikasi(cfg *TelegramConfig, pesan string) error {
-	if !cfg.Enabled {
-		return nil
+// handleStatusCommand: Handle /status command
+func handleStatusCommand(db *sql.DB, botToken string, chatID int) {
+	// Get device status
+	var deviceName, relayStatus, lastHeartbeat string
+
+	db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = 'device_name'").Scan(&deviceName)
+	db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = 'relay_status'").Scan(&relayStatus)
+	db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = 'device_last_heartbeat'").Scan(&lastHeartbeat)
+
+	// Get scheduled cards count for today
+	now := time.Now()
+	todayIndex := int(now.Weekday())
+	todayName := hariMap[todayIndex]
+
+	var cardCount int
+	db.QueryRow(`
+		SELECT COUNT(*) FROM users u
+		JOIN schedules s ON u.id = s.user_id
+		WHERE u.is_active = TRUE AND u.is_admin = FALSE AND s.hari = ?
+	`, todayName).Scan(&cardCount)
+
+	// Get access log count for today
+	var accessCount int
+	db.QueryRow(`
+		SELECT COUNT(*) FROM access_logs 
+		WHERE DATE(waktu) = CURDATE()
+	`).Scan(&accessCount)
+
+	relayStatusStr := "🔒 LOCKED"
+	if relayStatus == "1" {
+		relayStatusStr = "🔓 UNLOCKED"
 	}
 
-	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", cfg.Token)
+	message := fmt.Sprintf(
+		"📊 STATUS PINTU\n\n"+
+			"Device: %s\n"+
+			"Relay: %s\n"+
+			"Last Heartbeat: %s\n"+
+			"Hari: %s\n"+
+			"Kartu Hari Ini: %d\n"+
+			"Akses Hari Ini: %d",
+		deviceName, relayStatusStr, lastHeartbeat, todayName, cardCount, accessCount,
+	)
+	sendTelegramMessage(botToken, chatID, message)
+	log.Println("✅ /status command executed")
+}
 
-	resp, err := http.PostForm(apiURL, url.Values{
-		"chat_id": {cfg.ChatID},
-		"text":    {pesan},
-	})
+// sendTelegramMessage: Kirim pesan ke Telegram
+func sendTelegramMessage(botToken string, chatID int, text string) {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", botToken)
+
+	payload := map[string]interface{}{
+		"chat_id": chatID,
+		"text":    text,
+	}
+
+	jsonPayload, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("failed to send telegram message: %w", err)
+		log.Println("❌ Error marshaling JSON:", err)
+		return
+	}
+
+	resp, err := http.Post(url, "application/json", strings.NewReader(string(jsonPayload)))
+	if err != nil {
+		log.Println("❌ Error sending Telegram message:", err)
+		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("telegram API error %d: %s", resp.StatusCode, string(body))
+		log.Printf("⚠️  Telegram returned status %d\n", resp.StatusCode)
 	}
-
-	return nil
 }
 
-// SetJadwalHandler: Handle command /setjadwal dari bot Telegram
-// Format: /setjadwal [hari] [nama1, nama2, ...]
-// Contoh: /setjadwal senin ALVARO, AKBAR, JEKI
-func SetJadwalHandler(db *sql.DB, c telebot.Context) error {
-	text := c.Text()
-	parts := strings.Fields(text)
+// ===== UNTUK ESP32 =====
 
-	if len(parts) < 3 {
-		return c.Send(
-			"❌ Format salah!\n" +
-				"Gunakan: /setjadwal [hari] [nama1, nama2, ...]\n\n" +
-				"Contoh: /setjadwal senin ALVARO, AKBAR, JEKI\n\n" +
-				"Hari yang valid: Senin, Selasa, Rabu, Kamis, Jumat",
-		)
+// GetSyncStatusHandler: Endpoint untuk ESP32 check apakah ada pending sync
+// Endpoint: GET /api/sync-status
+func GetSyncStatusHandler(db *sql.DB, w http.ResponseWriter, r *http.Request) {
+	var syncPending string
+	err := db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = 'sync_pending'").Scan(&syncPending)
+
+	// Default false kalau tidak ada record
+	if err != nil || syncPending == "" {
+		syncPending = "false"
 	}
 
-	hariRaw := parts[1]
-	hari := strings.ToUpper(hariRaw[:1]) + strings.ToLower(hariRaw[1:])
+	shouldSync := syncPending == "true"
 
-	// Hanya Senin-Jumat (sesuai ENUM di schema.sql)
-	validDays := map[string]bool{
-		"Senin": true, "Selasa": true, "Rabu": true, "Kamis": true, "Jumat": true,
-	}
-	if !validDays[hari] {
-		return c.Send("❌ Hari tidak valid: " + hari + "\nGunakan: Senin, Selasa, Rabu, Kamis, atau Jumat")
-	}
-
-	namesStr := strings.Join(parts[2:], " ")
-	names := strings.Split(namesStr, ",")
-
-	_, err := db.Exec("DELETE FROM schedules WHERE hari = ?", hari)
-	if err != nil {
-		return c.Send("❌ Error menghapus jadwal lama: " + err.Error())
-	}
-
-	insertedNames := []string{}
-	notFoundNames := []string{}
-	adminSkippedNames := []string{}
-
-	for _, name := range names {
-		name = strings.TrimSpace(name)
-		if name == "" || name == "-" || strings.ToLower(name) == "kosong" {
-			continue
-		}
-		nameUpper := strings.ToUpper(name)
-
-		var userID int
-		var isAdmin bool
-		err := db.QueryRow(
-			"SELECT id, is_admin FROM users WHERE UPPER(nama) = ? AND is_active = TRUE",
-			nameUpper,
-		).Scan(&userID, &isAdmin)
-		if err != nil {
-			notFoundNames = append(notFoundNames, nameUpper)
-			continue
-		}
-
-		// Skip jika user adalah admin
-		if isAdmin {
-			adminSkippedNames = append(adminSkippedNames, nameUpper)
-			continue
-		}
-
-		_, err = db.Exec("INSERT INTO schedules (user_id, hari) VALUES (?, ?)", userID, hari)
-		if err == nil {
-			insertedNames = append(insertedNames, nameUpper)
-		}
-	}
-
-	// Build response
-	response := "✅ Jadwal " + hari + " berhasil diupdate!\n\n"
-	response += "📋 Terjadwal (" + strconv.Itoa(len(insertedNames)) + " orang):\n"
-	if len(insertedNames) > 0 {
-		for _, n := range insertedNames {
-			response += "  • " + n + "\n"
-		}
-	} else {
-		response += "  (kosong)\n"
-	}
-	if len(adminSkippedNames) > 0 {
-		response += "\n⚠️  Tidak perlu dijadwal (" + strconv.Itoa(len(adminSkippedNames)) + " orang - sudah admin):\n"
-		for _, n := range adminSkippedNames {
-			response += "  • " + n + " (tidak perlu ditambahkan, sudah menjadi admin dan bisa akses kapan saja)\n"
-		}
-	}
-	if len(notFoundNames) > 0 {
-		response += "\n❌ Tidak ditemukan di database (" + strconv.Itoa(len(notFoundNames)) + " orang):\n"
-		for _, n := range notFoundNames {
-			response += "  • " + n + "\n"
-		}
-		response += "\nPastikan nama sesuai yang ada di database."
-	}
-
-	return c.Send(response)
-}
-
-// LihatJadwalHandler: Handle command /lihatjadwal
-// Format: /lihatjadwal [hari] atau /lihatjadwal (semua hari)
-func LihatJadwalHandler(db *sql.DB, c telebot.Context) error {
-	text := c.Text()
-	parts := strings.Fields(text)
-
-	hariFilter := ""
-	if len(parts) >= 2 {
-		hariRaw := parts[1]
-		hariFilter = strings.ToUpper(hariRaw[:1]) + strings.ToLower(hariRaw[1:])
-	}
-
-	validDays := []string{"Senin", "Selasa", "Rabu", "Kamis", "Jumat"}
-	daysToShow := validDays
-
-	if hariFilter != "" {
-		found := false
-		for _, d := range validDays {
-			if d == hariFilter {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return c.Send("❌ Hari tidak valid. Gunakan: Senin, Selasa, Rabu, Kamis, Jumat")
-		}
-		daysToShow = []string{hariFilter}
-	}
-
-	response := "📅 Jadwal Akses Pintu\n\n"
-	for _, hari := range daysToShow {
-		rows, err := db.Query(`
-			SELECT u.nama FROM users u
-			JOIN schedules s ON u.id = s.user_id
-			WHERE s.hari = ? AND u.is_active = TRUE
-			ORDER BY u.nama
-		`, hari)
-		if err != nil {
-			continue
-		}
-
-		var names []string
-		for rows.Next() {
-			var nama string
-			if rows.Scan(&nama) == nil {
-				names = append(names, nama)
-			}
-		}
-		rows.Close()
-
-		response += "📌 " + hari + " (" + strconv.Itoa(len(names)) + " orang):\n"
-		if len(names) == 0 {
-			response += "  (kosong)\n"
-		} else {
-			for _, n := range names {
-				response += "  • " + n + "\n"
-			}
-		}
-		response += "\n"
-	}
-
-	return c.Send(response)
-}
-
-// DeviceStatusHandler: Handle command /device
-// Menampilkan status perangkat ESP32 termasuk:
-// - Jenis perangkat (ESP32)
-// - Status online/offline
-// - Uptime
-// - Informasi sistem lainnya
-func DeviceStatusHandler(db *sql.DB, c telebot.Context) error {
-	// Baca device settings dari database
-	deviceSettings := make(map[string]string)
-	requiredSettings := []string{
-		"device_type", "device_name", "device_started_at",
-		"device_last_heartbeat", "relay_status", "door_name",
-	}
-
-	for _, key := range requiredSettings {
-		var value string
-		err := db.QueryRow(
-			"SELECT setting_value FROM settings WHERE setting_key = ?",
-			key,
-		).Scan(&value)
-		if err == nil {
-			deviceSettings[key] = value
-		}
-	}
-
-	// Set default values jika belum ada
-	if deviceSettings["device_type"] == "" {
-		deviceSettings["device_type"] = "ESP32"
-	}
-	if deviceSettings["device_name"] == "" {
-		deviceSettings["device_name"] = "RFID Door Lock System"
-	}
-	if deviceSettings["door_name"] == "" {
-		deviceSettings["door_name"] = "Main Door"
-	}
-
-	// Hitung uptime berdasarkan device_started_at
-	uptime := "Unknown"
-	if deviceSettings["device_started_at"] != "" {
-		startTime, err := time.Parse("2006-01-02 15:04:05", deviceSettings["device_started_at"])
-		if err == nil {
-			duration := time.Since(startTime)
-			days := int(duration.Hours() / 24)
-			hours := int(duration.Hours()) % 24
-			minutes := int(duration.Minutes()) % 60
-
-			if days > 0 {
-				uptime = fmt.Sprintf("%d hari %d jam %d menit", days, hours, minutes)
-			} else if hours > 0 {
-				uptime = fmt.Sprintf("%d jam %d menit", hours, minutes)
-			} else {
-				uptime = fmt.Sprintf("%d menit", minutes)
-			}
-		}
-	}
-
-	// Tentukan status device berdasarkan last heartbeat
-	deviceStatus := "🔴 OFFLINE"
-	lastHeartbeat := "Tidak ada data"
-	if deviceSettings["device_last_heartbeat"] != "" {
-		lastHeartbeatTime, err := time.Parse("2006-01-02 15:04:05", deviceSettings["device_last_heartbeat"])
-		if err == nil {
-			lastHeartbeat = lastHeartbeatTime.Format("02-01-2006 15:04:05")
-
-			// Jika last heartbeat kurang dari 5 menit yang lalu, status ONLINE
-			if time.Since(lastHeartbeatTime) < 5*time.Minute {
-				deviceStatus = "🟢 ONLINE"
-			} else if time.Since(lastHeartbeatTime) < 1*time.Hour {
-				deviceStatus = "🟡 IDLE (Terakhir aktif: " + fmt.Sprintf("%d menit", int(time.Since(lastHeartbeatTime).Minutes())) + " lalu)"
-			}
-		}
-	}
-
-	// Hitung total akses hari ini
-	var totalAccessToday int
-	today := time.Now().Format("2006-01-02")
-	err := db.QueryRow(
-		"SELECT COUNT(*) FROM access_logs WHERE DATE(waktu) = ?",
-		today,
-	).Scan(&totalAccessToday)
-	if err != nil {
-		totalAccessToday = 0
-	}
-
-	// Hitung access granted vs denied hari ini
-	var grantedToday, deniedToday int
-	db.QueryRow(
-		"SELECT COUNT(*) FROM access_logs WHERE DATE(waktu) = ? AND status = 'GRANTED'",
-		today,
-	).Scan(&grantedToday)
-	db.QueryRow(
-		"SELECT COUNT(*) FROM access_logs WHERE DATE(waktu) = ? AND status = 'DENIED'",
-		today,
-	).Scan(&deniedToday)
-
-	// Hitung total akses user
-	var totalUsers int
-	db.QueryRow("SELECT COUNT(*) FROM users WHERE is_active = TRUE").Scan(&totalUsers)
-
-	// Relay status
-	relayStatus := "Unknown"
-	if deviceSettings["relay_status"] != "" {
-		if deviceSettings["relay_status"] == "1" || deviceSettings["relay_status"] == "open" {
-			relayStatus = "🔓 Terbuka"
-		} else {
-			relayStatus = "🔒 Tertutup"
-		}
-	}
-
-	// Build response
-	response := "🖥️ *STATUS PERANGKAT*\n"
-
-	// Device Info
-	response += fmt.Sprintf("*📱 Jenis Perangkat:* %s\n", deviceSettings["device_type"])
-	response += fmt.Sprintf("*💻 Nama:* %s\n", deviceSettings["device_name"])
-	response += fmt.Sprintf("*🚪 Pintu:* %s\n\n", deviceSettings["door_name"])
-
-	// Status & Uptime
-	response += fmt.Sprintf("*Status Perangkat:* %s\n", deviceStatus)
-	response += fmt.Sprintf("*⏱️ Uptime:* %s\n", uptime)
-	response += fmt.Sprintf("*🔔 Terakhir Aktif:* %s\n", lastHeartbeat)
-	response += fmt.Sprintf("*🔐 Status Pintu:* %s\n\n", relayStatus)
-
-	// Today Statistics
-	response += "*📊 Statistik Hari Ini*\n"
-	response += fmt.Sprintf("Tanggal: `%s`\n\n", today)
-	response += fmt.Sprintf("✅ *Granted:* %d akses\n", grantedToday)
-	response += fmt.Sprintf("❌ *Denied:* %d akses\n", deniedToday)
-	response += fmt.Sprintf("📈 *Total:* %d akses\n\n", totalAccessToday)
-
-	// System Info
-	response += fmt.Sprintf("*👥 Total User Aktif:* %d\n", totalUsers)
-	response += fmt.Sprintf("*⚙️ Server Time:* `%s`", time.Now().Format("02-01-2006 15:04:05"))
-
-	// Send dengan Markdown parsing
-	return c.Send(response, &telebot.SendOptions{
-		ParseMode: telebot.ModeMarkdown,
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"should_sync": shouldSync,
+		"timestamp":   time.Now().Format("2006-01-02 15:04:05"),
 	})
 }
 
-// StartTelegramBot: Jalankan bot Telegram dengan token dari database.
-// Fungsi ini dipanggil saat server startup (di main.go).
-// Bot berjalan di goroutine terpisah agar tidak memblokir HTTP server.
-func StartTelegramBot(db *sql.DB) error {
-	// Baca config dari database — sumber tunggal kebenaran untuk token & chat_id
-	cfg, err := GetTelegramConfig(db)
+// ConfirmSyncHandler: ESP32 confirm sync setelah selesai
+// Endpoint: POST /api/confirm-sync
+func ConfirmSyncHandler(db *sql.DB, w http.ResponseWriter, r *http.Request) {
+	// Reset sync_pending flag ke false
+	query := `
+		INSERT INTO settings (setting_key, setting_value) 
+		VALUES ('sync_pending', 'false') 
+		ON DUPLICATE KEY UPDATE setting_value = 'false'
+	`
+	_, err := db.Exec(query)
 	if err != nil {
-		return fmt.Errorf("tidak bisa baca telegram config: %w", err)
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "Database error"})
+		return
 	}
 
-	if !cfg.Enabled {
-		log.Println("Telegram bot disabled di settings")
-		return nil
-	}
+	// Record sync completed time
+	query2 := `
+		INSERT INTO settings (setting_key, setting_value) 
+		VALUES ('sync_completed_at', ?) 
+		ON DUPLICATE KEY UPDATE setting_value = ?
+	`
+	now := time.Now().Format("2006-01-02 15:04:05")
+	_, err = db.Exec(query2, now, now)
 
-	pref := telebot.Settings{
-		Token:  cfg.Token,
-		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
-	}
+	log.Println("✅ /api/confirm-sync - sync completed")
 
-	b, err := telebot.NewBot(pref)
-	if err != nil {
-		return fmt.Errorf("gagal buat bot: %w", err)
-	}
-
-	b.Handle("/setjadwal", func(c telebot.Context) error {
-		return SetJadwalHandler(db, c)
+	jsonResponse(w, http.StatusOK, map[string]string{
+		"status":  "ok",
+		"message": "Sync confirmed",
 	})
-
-	b.Handle("/lihatjadwal", func(c telebot.Context) error {
-		return LihatJadwalHandler(db, c)
-	})
-
-	b.Handle("/start", func(c telebot.Context) error {
-		return c.Send(
-			"🤖 Bot Jadwal Pintu Aktif!\n\n" +
-				"Commands:\n" +
-				"• /setjadwal [hari] [nama1, nama2, ...]\n" +
-				"  Contoh: /setjadwal senin ALVARO, AKBAR\n\n" +
-				"• /lihatjadwal [hari]\n" +
-				"  Contoh: /lihatjadwal senin\n" +
-				"  Atau /lihatjadwal untuk semua hari\n\n" +
-				"• /help - Lihat daftar lengkap commands\n\n" +
-				"• /database - Lihat daftar pengguna & UID\n\n" +
-				"• /status - Lihat status perangkat ESP",
-		)
-	})
-
-	b.Handle("/help", func(c telebot.Context) error {
-		return c.Send(
-			"📖 Daftar Commands:\n\n" +
-				"• /setjadwal [hari] [nama1, nama2, ...]\n" +
-				"  Set jadwal akses untuk hari tertentu\n" +
-				"  Contoh: /setjadwal senin ALVARO, AKBAR\n\n" +
-				"• /lihatjadwal [hari]\n" +
-				"  Lihat jadwal akses\n" +
-				"  Contoh: /lihatjadwal senin\n" +
-				"  Atau: /lihatjadwal (untuk semua hari)\n\n" +
-				"• /database\n" +
-				"  Lihat daftar pengguna dan UID dari database\n\n" +
-				"• /status\n" +
-				"  Lihat status dan informasi perangkat ESP\n\n" +
-				"• /help\n" +
-				"  Tampilkan bantuan ini",
-		)
-	})
-
-	b.Handle("/database", func(c telebot.Context) error {
-		// Query admin users
-		adminRows, err := db.Query("SELECT nama, uid FROM users WHERE is_admin = TRUE ORDER BY nama")
-		if err != nil {
-			return c.Send("❌ Error querying admin users: " + err.Error())
-		}
-		defer adminRows.Close()
-
-		var adminUsers []struct {
-			Nama string
-			UID  string
-		}
-		for adminRows.Next() {
-			var nama, uid string
-			if err := adminRows.Scan(&nama, &uid); err != nil {
-				continue
-			}
-			adminUsers = append(adminUsers, struct {
-				Nama string
-				UID  string
-			}{nama, uid})
-		}
-
-		// Query non-admin users
-		userRows, err := db.Query("SELECT nama, uid FROM users WHERE is_admin = FALSE ORDER BY nama")
-		if err != nil {
-			return c.Send("❌ Error querying users: " + err.Error())
-		}
-		defer userRows.Close()
-
-		var regularUsers []struct {
-			Nama string
-			UID  string
-		}
-		for userRows.Next() {
-			var nama, uid string
-			if err := userRows.Scan(&nama, &uid); err != nil {
-				continue
-			}
-			regularUsers = append(regularUsers, struct {
-				Nama string
-				UID  string
-			}{nama, uid})
-		}
-
-		// Build response
-		response := "📊 DATABASE USERS\n\n"
-		response += "👑 ADMIN (" + strconv.Itoa(len(adminUsers)) + " orang):\n"
-		if len(adminUsers) == 0 {
-			response += "  (kosong)\n"
-		} else {
-			for _, user := range adminUsers {
-				response += "  • " + user.Nama + " → " + user.UID + "\n"
-			}
-		}
-
-		response += "\n👤 REGULAR (" + strconv.Itoa(len(regularUsers)) + " orang):\n"
-		if len(regularUsers) == 0 {
-			response += "  (kosong)\n"
-		} else {
-			for _, user := range regularUsers {
-				response += "  • " + user.Nama + " → " + user.UID + "\n"
-			}
-		}
-
-		return c.Send(response)
-	})
-
-	b.Handle("/status", func(c telebot.Context) error {
-		return DeviceStatusHandler(db, c)
-	})
-
-	log.Println("✅ Telegram bot started, listening for commands...")
-
-	// Jalankan di goroutine agar tidak block HTTP server
-	go b.Start()
-
-	// Kirim notifikasi bahwa server online ke grup
-	if err := KirimNotifikasi(cfg, "🖥️ Door Lock Server online\n"+time.Now().Format("02-01-2006 15:04:05")); err != nil {
-		log.Println("Warning: gagal kirim notifikasi startup ke Telegram:", err)
-	}
-
-	return nil
 }

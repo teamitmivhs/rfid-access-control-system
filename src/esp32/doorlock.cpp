@@ -16,6 +16,8 @@ String urlEncode(String str);
 bool verifyAccessLocal(String uid, String &nama);
 bool verifyAccessServer(String uid, String &nama);
 void syncCardsFromServer();
+void checkAndExecutePendingSync();
+void confirmSyncCompleted();
 
 const char* ssid     = "TEAM IT MIVHS";
 const char* password = "1TM1TR4101101MIVHS2025PASTIBISA2026SELALULANCAR2027GENERASI2028";
@@ -53,8 +55,8 @@ bool relay_is_active              = false;
 const unsigned long DEBOUNCE_DELAY = 50;
 const unsigned long RELAY_HOLD_TIME = 2000;
 
-//kartu admin (Always allowed)
-const int jumlah_kartu = 36;
+//kartu admin
+const int jumlah_kartu = 6;
 const String daftarUID[jumlah_kartu] = {
   "938934FF",  // ALVARO
   "2DCC8C8B",  // AKBAR
@@ -73,17 +75,21 @@ const String daftarNama[jumlah_kartu] = {
   "FERI (ADMIN)",
 };
 
-//kartu yang diambil dari server
+//kartu dari server
 const int MAX_SERVER_CARDS = 100;
 String serverCardUID[MAX_SERVER_CARDS];
 String serverCardNama[MAX_SERVER_CARDS];
 int serverCardCount = 0;
 unsigned long lastSyncTime = 0;
-const unsigned long SYNC_INTERVAL = 3600000; // Sync setiap 1 jam
+unsigned long lastSyncStatusCheckTime = 0;
+int syncFailCount = 0;
+const int MAX_FAIL_BEFORE_NOTIF = 3;
+const unsigned long SYNC_INTERVAL = 3600000;           // Sync scheduled: 1 jam
+const unsigned long SYNC_STATUS_CHECK_INTERVAL = 10000; // Check pending sync: 10 detik
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 
-// Verifikasi kartu secara lokal (Admin - offline-first)
+// Verifikasi kartu secara lokal (Admin)
 bool verifyAccessLocal(String uid, String &nama) {
   for (int i = 0; i < jumlah_kartu; i++) {
     if (uid == daftarUID[i]) {
@@ -96,7 +102,7 @@ bool verifyAccessLocal(String uid, String &nama) {
   return false;
 }
 
-// Verifikasi kartu dari server cache (scheduled untuk hari ini)
+// Verifikasi kartu dari server
 bool verifyAccessServer(String uid, String &nama) {
   if (serverCardCount == 0) {
     Serial.println("⚠️  Tidak ada kartu dari server untuk hari ini");
@@ -114,8 +120,7 @@ bool verifyAccessServer(String uid, String &nama) {
   return false;
 }
 
-// Sync kartu dari server untuk hari ini
-// BUG FIX: hapus guard duplikat di dalam fungsi — pengecekan interval cukup di loop()
+// === UPDATED: Sync dari server (simplified, no TCP test) ===
 void syncCardsFromServer() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("⚠️  WiFi not connected, skipping sync");
@@ -125,27 +130,40 @@ void syncCardsFromServer() {
   Serial.println("\n🔄 Syncing scheduled cards from server...");
 
   HTTPClient http;
-  http.setTimeout(2000); // FIX: timeout diperkecil agar tidak ngeblok loop lama
+  WiFiClient client;
   
-  // BUG FIX: endpoint diganti ke /api/cards/scheduled-today
-  // agar server hanya mengembalikan scheduled cards (bukan admin)
-  String url = "http://" + String(API_HOST) + ":" + String(API_PORT) + "/api/cards/scheduled-today";
+  http.setTimeout(15000);
+  http.setConnectTimeout(10000);
   
-  if (!http.begin(url)) {
-    Serial.println("❌ Failed to begin HTTP connection");
-    http.end();
+  String url = "http://192.168.107.37:8081/api/cards/scheduled-today";
+  Serial.println("URL: " + url);
+  
+  if (!http.begin(client, url)) {
+    Serial.println("❌ HTTP begin failed");
+    syncFailCount++;
+    if (syncFailCount >= MAX_FAIL_BEFORE_NOTIF) {
+      kirimPesan("⚠️ SYNC GAGAL\nHTTP begin failed\nGagal: " + String(syncFailCount) + "x\n" + getWaktuDanTanggal());
+      syncFailCount = 0;
+    }
     return;
   }
 
   int httpCode = http.GET();
+  Serial.println("HTTP Code: " + String(httpCode));
   
   if (httpCode != 200) {
     Serial.println("❌ HTTP Error: " + String(httpCode));
     http.end();
+    syncFailCount++;
+    if (syncFailCount >= MAX_FAIL_BEFORE_NOTIF) {
+      kirimPesan("⚠️ SYNC GAGAL - HTTP " + String(httpCode) + "\nGagal: " + String(syncFailCount) + "x\n" + getWaktuDanTanggal());
+      syncFailCount = 0;
+    }
     return;
   }
 
   String response = http.getString();
+  Serial.println("Response: " + response);
   http.end();
 
   DynamicJsonDocument doc(2048);
@@ -157,7 +175,6 @@ void syncCardsFromServer() {
   }
 
   serverCardCount = 0;
-
   JsonArray cards = doc["cards"].as<JsonArray>();
   
   int count = 0;
@@ -169,13 +186,82 @@ void syncCardsFromServer() {
 
     serverCardUID[count] = uid;
     serverCardNama[count] = nama;
+    Serial.println("  ✓ Added: " + uid + " (" + nama + ")");
     count++;
   }
 
   serverCardCount = count;
-  // FIX: lastSyncTime sudah di-set di loop() sebelum fungsi ini dipanggil
+  syncFailCount = 0;
 
-  Serial.println("✓ Sync complete! " + String(serverCardCount) + " scheduled cards loaded for " + doc["hari"].as<String>());
+  Serial.println("✅ Sync complete! " + String(serverCardCount) + " cards loaded for " + doc["hari"].as<String>());
+}
+
+// === NEW: Check apakah ada pending sync dari Telegram ===
+void checkAndExecutePendingSync() {
+  if (WiFi.status() != WL_CONNECTED) {
+    return; // Skip kalau WiFi down
+  }
+
+  HTTPClient http;
+  WiFiClient client;
+  
+  String url = "http://192.168.107.37:8081/api/sync-status";
+  
+  if (!http.begin(client, url)) {
+    Serial.println("❌ Failed to check sync status");
+    return;
+  }
+
+  int httpCode = http.GET();
+  
+  if (httpCode != 200) {
+    Serial.println("⚠️  Sync status check failed (HTTP " + String(httpCode) + ")");
+    http.end();
+    return;
+  }
+
+  String response = http.getString();
+  http.end();
+
+  DynamicJsonDocument doc(512);
+  if (deserializeJson(doc, response)) {
+    Serial.println("❌ JSON parse error");
+    return;
+  }
+
+  bool shouldSync = doc["should_sync"].as<bool>();
+  
+  if (shouldSync) {
+    Serial.println("\n📲 PENDING SYNC DETECTED FROM TELEGRAM!");
+    Serial.println("Executing sync now...");
+    
+    syncCardsFromServer();
+    
+    // Confirm sync ke server
+    delay(1000);
+    confirmSyncCompleted();
+  }
+}
+
+// === NEW: Confirm ke server bahwa sync sudah selesai ===
+void confirmSyncCompleted() {
+  if (WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  HTTPClient http;
+  WiFiClient client;
+  
+  String url = "http://192.168.107.37:8081/api/confirm-sync";
+  
+  if (!http.begin(client, url)) {
+    Serial.println("❌ Failed to confirm sync");
+    return;
+  }
+
+  int httpCode = http.POST("");
+  Serial.println("Confirm sync response: HTTP " + String(httpCode));
+  http.end();
 }
 
 void setup() {
@@ -184,34 +270,9 @@ void setup() {
   Serial.println("\n\n=== DOOR LOCK STARTING ===");
   
   pinMode(RLY_PIN, OUTPUT);
-  
-  Serial.println("\n*** RELAY DIAGNOSTIC TEST ***");
-  Serial.print("RLY_PIN: ");
-  Serial.println(RLY_PIN);
-  Serial.print("RELAY_ON (HIGH): ");
-  Serial.println(RELAY_ON);
-  Serial.print("RELAY_OFF (LOW): ");
-  Serial.println(RELAY_OFF);
-  
+  Serial.println("RLY_PIN: " + String(RLY_PIN));
   digitalWrite(RLY_PIN, RELAY_OFF);
   delay(500);
-  Serial.print("Relay state after RELAY_OFF: ");
-  Serial.println(digitalRead(RLY_PIN));
-  
-  Serial.println("\nToggle relay 3x untuk test GPIO...");
-  for (int i = 0; i < 3; i++) {
-    Serial.print("Toggle "); Serial.print(i + 1); Serial.print(" - ON: ");
-    digitalWrite(RLY_PIN, RELAY_ON);
-    delay(300);
-    Serial.println(digitalRead(RLY_PIN));
-    
-    Serial.print("Toggle "); Serial.print(i + 1); Serial.print(" - OFF: ");
-    digitalWrite(RLY_PIN, RELAY_OFF);
-    delay(300);
-    Serial.println(digitalRead(RLY_PIN));
-  }
-  
-  Serial.println("*** END DIAGNOSTIC TEST ***\n");
 
   pinMode(MANUAL_BTN_PIN, INPUT_PULLUP);
   pinMode(BUZ_PIN, OUTPUT);
@@ -225,39 +286,24 @@ void setup() {
   Serial.print("MFRC522 version: 0x");
   Serial.println(ver, HEX);
   if (ver == 0x00 || ver == 0xFF) {
-    Serial.println("ERROR: RFID tidak terdeteksi! Cek wiring SPI.");
+    Serial.println("ERROR: RFID tidak terdeteksi!");
   } else {
     Serial.println("RFID OK");
   }
 
-  Serial.println("\n*** Relay Verification ***");
-  for (int i = 0; i < 3; i++) {
-    Serial.print("Check "); Serial.print(i + 1); Serial.print(": Relay pin state = ");
-    Serial.println(digitalRead(RLY_PIN));
-    if (digitalRead(RLY_PIN) != LOW) {
-      Serial.println("WARNING: Relay not OFF! Trying to set OFF again...");
-      digitalWrite(RLY_PIN, RELAY_OFF);
-      delay(500);
-    }
-  }
-  Serial.println("*** Relay OK ***\n");
-
-  //ESP32 static ip address
   IPAddress local_IP(192, 168, 107, 100);
   IPAddress gateway(192, 168, 96, 1);
-  IPAddress subnet(255, 255, 240, 0);  // /20 subnet mask
+  IPAddress subnet(255, 255, 240, 0);
   IPAddress dns(8, 8, 8, 8);
-  if (!WiFi.config(local_IP, gateway, subnet, dns)) {
-    Serial.println("WARNING: Failed to configure static IP, using DHCP");
-  } else {
-    Serial.println("Static IP configured: 192.168.107.100");
-  }
-//ESP32 wifi conf begin 
+  WiFi.config(local_IP, gateway, subnet, dns);
+
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
+  int wifiTimeout = 0;
+  while (WiFi.status() != WL_CONNECTED && wifiTimeout < 20) {
     delay(500);
     Serial.print(".");
+    wifiTimeout++;
   }
   Serial.println("\nConnected!");
   Serial.println(WiFi.localIP());
@@ -265,10 +311,12 @@ void setup() {
   configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
   Serial.println("Waiting for NTP time sync...");
   time_t now = time(nullptr);
-  while (now < 24 * 3600) {
+  int ntpTimeout = 0;
+  while (now < 24 * 3600 && ntpTimeout < 10) {
     delay(500);
     Serial.print(".");
     now = time(nullptr);
+    ntpTimeout++;
   }
   Serial.println("\nTime synced!");
 
@@ -278,31 +326,25 @@ void setup() {
   kirimPesan("Door LOCK online\n" + getWaktuDanTanggal() + "\n" + getHari());
 
   ArduinoOTA.setHostname("DoorLock-ESP32");
-  ArduinoOTA.onStart([]() { Serial.println("Start OTA update"); });
-  ArduinoOTA.onEnd([]() { Serial.println("\nEnd OTA"); });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("OTA Progress: %u%%\r", (progress / (total / 100)));
-  });
-  ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("OTA Error[%u]: ", error);
-    if      (error == OTA_AUTH_ERROR)    Serial.println("Auth Failed");
-    else if (error == OTA_BEGIN_ERROR)   Serial.println("Begin Failed");
-    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-    else if (error == OTA_END_ERROR)     Serial.println("End Failed");
-  });
   ArduinoOTA.begin();
 }
 
 void loop() {
   ArduinoOTA.handle();
 
-  // FIX: set lastSyncTime DULU sebelum sync, agar kalau gagal/timeout
-  // tidak langsung retry lagi di iterasi loop berikutnya
+  // === SCHEDULED SYNC (1 jam sekali) ===
   if (WiFi.status() == WL_CONNECTED) {
     if (lastSyncTime == 0 || (millis() - lastSyncTime >= SYNC_INTERVAL)) {
       lastSyncTime = millis();
       syncCardsFromServer();
+    }
+  }
+
+  // === PENDING SYNC CHECK (10 detik sekali) ===
+  if (WiFi.status() == WL_CONNECTED) {
+    if (lastSyncStatusCheckTime == 0 || (millis() - lastSyncStatusCheckTime >= SYNC_STATUS_CHECK_INTERVAL)) {
+      lastSyncStatusCheckTime = millis();
+      checkAndExecutePendingSync();  // ← Cek apakah ada /sync dari Telegram
     }
   }
 
@@ -367,21 +409,18 @@ void loop() {
   String nama_kartu = "";
   Serial.println("🔍 Verifying card...");
   
-  // STEP 1: Check Admin cards lokal (offline-first)
   if (verifyAccessLocal(kartu, nama_kartu)) {
     Serial.println("✅ Access GRANTED (ADMIN)");
     bener();
     buka();
     kirimPesan("✅ ACCESS GRANTED\nNama: " + nama_kartu + "\nKartu: " + kartu + "\nTipe: ADMIN\n" + getWaktuDanTanggal() + "\nHari: " + getHari());
   } 
-  // STEP 2: Check scheduled cards dari server cache
   else if (verifyAccessServer(kartu, nama_kartu)) {
     Serial.println("✅ Access GRANTED (SCHEDULED)");
     bener();
     buka();
     kirimPesan("✅ ACCESS GRANTED\nNama: " + nama_kartu + "\nKartu: " + kartu + "\nTipe: SCHEDULED\n" + getWaktuDanTanggal() + "\nHari: " + getHari());
   } 
-  // STEP 3: Not authorized
   else {
     Serial.println("❌ Access DENIED");
     salah();
@@ -407,10 +446,8 @@ void salah() {
 
 void buka() {
   Serial.println(">>> RELAY OPENING DOOR");
-  Serial.print("Setting RLY_PIN ("); Serial.print(RLY_PIN); Serial.println(") to HIGH (ON)");
-  
   digitalWrite(RLY_PIN, RELAY_ON);
-  Serial.print("Relay state after ON: "); Serial.println(digitalRead(RLY_PIN));
+  Serial.println("Relay ON");
 
   unsigned long start = millis();
   while (millis() - start < (unsigned long)(lama_buka_pintu * 1000)) {
@@ -419,7 +456,7 @@ void buka() {
 
   Serial.println(">>> RELAY CLOSING DOOR");
   digitalWrite(RLY_PIN, RELAY_OFF);
-  Serial.print("Relay state after OFF: "); Serial.println(digitalRead(RLY_PIN));
+  Serial.println("Relay OFF");
 }
 
 String urlEncode(String str) {
