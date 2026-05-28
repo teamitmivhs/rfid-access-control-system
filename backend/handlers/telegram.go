@@ -36,7 +36,7 @@ type TelegramResponse struct {
 	Error  string                 `json:"error_description,omitempty"`
 }
 
-// TelegramWebhookHandler: Handle incoming updates dari Telegram
+// TelegramWebhookHandler: Handle incoming updates dari Telegram via Webhook
 // Endpoint: POST /telegram/webhook
 func TelegramWebhookHandler(db *sql.DB, botToken string, w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
@@ -51,31 +51,91 @@ func TelegramWebhookHandler(db *sql.DB, botToken string, w http.ResponseWriter, 
 		return
 	}
 
+	processUpdate(db, botToken, update)
+	jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// StartTelegramBot: Inisialisasi dan jalankan Telegram bot (long polling)
+func StartTelegramBot(db *sql.DB) error {
+	var token string
+	err := db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = 'telegram_token'").Scan(&token)
+	if err != nil || token == "" {
+		return fmt.Errorf("telegram_token tidak ditemukan di database")
+	}
+
+	// Jalankan bot di goroutine agar tidak memblokir main thread
+	go func() {
+		log.Println("🤖 Telegram bot starting (long polling)...")
+		lastUpdateID := 0
+		for {
+			updates, err := getUpdates(token, lastUpdateID+1)
+			if err != nil {
+				// log.Printf("⚠️  Telegram getUpdates error: %v\n", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+
+			for _, update := range updates {
+				processUpdate(db, token, update)
+				lastUpdateID = update.UpdateID
+			}
+			time.Sleep(1 * time.Second)
+		}
+	}()
+
+	return nil
+}
+
+// getUpdates: Ambil update dari Telegram API (long polling)
+func getUpdates(botToken string, offset int) ([]TelegramUpdate, error) {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=30", botToken, offset)
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		OK     bool             `json:"ok"`
+		Result []TelegramUpdate `json:"result"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	if !result.OK {
+		return nil, fmt.Errorf("telegram API error")
+	}
+
+	return result.Result, nil
+}
+
+// processUpdate: Logika utama pemrosesan pesan Telegram
+func processUpdate(db *sql.DB, botToken string, update TelegramUpdate) {
 	// Abaikan jika bukan message
 	if update.Message.Text == "" {
-		jsonResponse(w, http.StatusOK, map[string]string{"status": "ignored"})
 		return
 	}
 
 	text := strings.TrimSpace(update.Message.Text)
 	chatID := update.Message.Chat.ID
 
+	log.Printf("📩 Telegram msg from %d: %s\n", chatID, text)
+
 	// Parse command
 	if strings.HasPrefix(text, "/sync") {
 		handleSyncCommand(db, botToken, chatID)
-		jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}
 
 	if strings.HasPrefix(text, "/status") {
 		handleStatusCommand(db, botToken, chatID)
-		jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}
 
 	// Unknown command
 	sendTelegramMessage(botToken, chatID, "❓ Command tidak dikenal. Gunakan:\n/sync - Sync kartu dari database\n/status - Lihat status pintu")
-	jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // handleSyncCommand: Handle /sync command
