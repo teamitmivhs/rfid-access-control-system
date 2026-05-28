@@ -634,8 +634,9 @@ func StartTelegramBot(db *sql.DB) error {
 		if err == nil && pendingID != 0 && awaiting && uid != "" {
 			isAdmin := (mode == "admin")
 			if err := completePendingRegistration(db, pendingID, uid, text, isAdmin); err == nil {
-				// Confirm to user
-				_ = c.Send("✅ UID berhasil didaftarkan: " + uid + " → " + text)
+				// Confirm to user in the same chat where they replied
+				chatID := int(c.Chat().ID)
+				_ = sendTelegramMessage(token, chatID, "✅ UID berhasil didaftarkan: "+uid+" → "+text)
 				// Notify group
 				if cfg, cerr := GetTelegramConfig(db); cerr == nil && cfg.Enabled {
 					_ = KirimNotifikasi(cfg, "✅ Kartu baru didaftarkan: "+text+" ("+uid+")")
