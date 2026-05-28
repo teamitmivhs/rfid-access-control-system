@@ -249,6 +249,76 @@ void checkAndExecutePendingSync() {
   }
 }
 
+// Poll server for pending registration mode
+void checkRegistrationMode() {
+  if (millis() - lastRegPollTime < REG_POLL_INTERVAL) return;
+  lastRegPollTime = millis();
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  HTTPClient http;
+  WiFiClient client;
+  String url = String("http://") + API_HOST + ":" + String(API_PORT) + "/api/registration/pending-mode";
+  if (!http.begin(client, url)) {
+    Serial.println("❌ Failed begin registration-mode request");
+    return;
+  }
+  int httpCode = http.GET();
+  if (httpCode != 200) {
+    // no pending or error
+    http.end();
+    return;
+  }
+  String resp = http.getString();
+  http.end();
+
+  DynamicJsonDocument doc(256);
+  DeserializationError err = deserializeJson(doc, resp);
+  if (err) {
+    Serial.println("❌ JSON parse error (reg mode): " + String(err.c_str()));
+    return;
+  }
+  String mode = doc["mode"].as<String>();
+  if (mode != registrationMode) {
+    registrationMode = mode;
+    if (registrationMode != "") {
+      Serial.println("🔔 Registration mode active: " + registrationMode);
+    } else {
+      Serial.println("🔕 No registration pending");
+    }
+  }
+}
+
+// Post UID to server when registration mode is active
+bool postRegisterReport(String uid, String mode) {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  HTTPClient http;
+  WiFiClient client;
+  String url = String("http://") + API_HOST + ":" + String(API_PORT) + "/api/device/register-report";
+  if (!http.begin(client, url)) {
+    Serial.println("❌ HTTP begin failed (register-report)");
+    return false;
+  }
+  http.addHeader("Content-Type", "application/json");
+
+  DynamicJsonDocument doc(256);
+  doc["uid"] = uid;
+  doc["mode"] = mode;
+  String payload;
+  serializeJson(doc, payload);
+
+  int code = http.POST(payload);
+  String resp = http.getString();
+  Serial.println("Register POST HTTP " + String(code) + " resp: " + resp);
+  http.end();
+  if (code != 200) return false;
+
+  DynamicJsonDocument rdoc(256);
+  if (deserializeJson(rdoc, resp)) return false;
+  String status = rdoc["status"].as<String>();
+  if (status == "ok") return true;
+  return false;
+}
+
 // === NEW: Confirm ke server bahwa sync sudah selesai ===
 void confirmSyncCompleted() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -398,6 +468,9 @@ void loop() {
     }
   }
 
+  // === REGISTRATION POLL (5 detik sekali) ===
+  checkRegistrationMode();
+
   // Manual button logic
   manual_btn_state = digitalRead(MANUAL_BTN_PIN);
 
@@ -458,7 +531,22 @@ void loop() {
 
   String nama_kartu = "";
   Serial.println("🔍 Verifying card...");
-  
+  // If registration mode active, post UID to server and skip normal verification
+  if (registrationMode != "") {
+    Serial.println("📌 Registration mode detected, sending UID to server: " + kartu);
+    bool ok = postRegisterReport(kartu, registrationMode);
+    if (ok) {
+      Serial.println("✅ UID posted for registration: " + kartu);
+      // short beep to acknowledge
+      digitalWrite(BUZ_PIN, HIGH); delay(100); digitalWrite(BUZ_PIN, LOW);
+      // server will clear pending when UID saved; clear local mode until poll updates
+      registrationMode = "";
+    } else {
+      Serial.println("⚠️  Registration post failed or no pending request");
+    }
+    mfrc522.PICC_HaltA();
+    return;
+  }
   if (verifyAccessLocal(kartu, nama_kartu)) {
     Serial.println("✅ Access GRANTED (ADMIN)");
     bener();
