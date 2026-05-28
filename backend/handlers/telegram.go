@@ -146,13 +146,14 @@ func TelegramWebhookHandler(db *sql.DB, botToken string, w http.ResponseWriter, 
 	if strings.HasPrefix(text, "/daftar") || strings.HasPrefix(text, "/register") {
 		// Create pending registration for this Telegram user
 		mode := "normal"
-		handleRegisterCommand(db, botToken, fromID, fromID, mode)
+		// store both telegram user id and the chat id where the command was issued
+		handleRegisterCommand(db, botToken, fromID, chatID, mode)
 		jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}
 	if strings.HasPrefix(text, "/daftaradmin") || strings.HasPrefix(text, "/registeradmin") {
 		mode := "admin"
-		handleRegisterCommand(db, botToken, fromID, fromID, mode)
+		handleRegisterCommand(db, botToken, fromID, chatID, mode)
 		jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}
@@ -177,6 +178,40 @@ func TelegramWebhookHandler(db *sql.DB, botToken string, w http.ResponseWriter, 
 				jsonResponse(w, http.StatusInternalServerError, map[string]string{"status": "error"})
 				return
 			}
+		}
+	}
+
+	// Accept form: /daftarnama Nama Lengkap - useful when bot privacy is ON in groups
+	if strings.HasPrefix(text, "/daftarnama") {
+		parts := strings.Fields(text)
+		if len(parts) < 2 {
+			jsonResponse(w, http.StatusOK, map[string]string{"status": "error", "message": "Gunakan: /daftarnama NAMA"})
+			return
+		}
+		name := strings.Join(parts[1:], " ")
+		pendingID, uid, mode, awaiting, err := getPendingByTelegramUser(db, strconv.Itoa(fromID))
+		if err != nil || pendingID == 0 {
+			_ = sendTelegramMessage(botToken, chatID, "❌ Tidak ada pendaftaran yang menunggu untuk Anda.")
+			jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
+			return
+		}
+		if !awaiting || uid == "" {
+			_ = sendTelegramMessage(botToken, chatID, "❌ Tidak ada UID yang menunggu untuk diselesaikan.")
+			jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
+			return
+		}
+		isAdmin := (mode == "admin")
+		if err := completePendingRegistration(db, pendingID, uid, name, isAdmin); err == nil {
+			_ = sendTelegramMessage(botToken, chatID, "✅ UID berhasil didaftarkan: "+uid+" → "+name)
+			if cfg, cerr := GetTelegramConfig(db); cerr == nil && cfg.Enabled {
+				_ = KirimNotifikasi(cfg, "✅ Kartu baru didaftarkan: "+name+" ("+uid+")")
+			}
+			jsonResponse(w, http.StatusOK, map[string]string{"status": "ok", "message": "registered"})
+			return
+		} else {
+			_ = sendTelegramMessage(botToken, chatID, "❌ Gagal menyimpan registrasi: "+err.Error())
+			jsonResponse(w, http.StatusInternalServerError, map[string]string{"status": "error"})
+			return
 		}
 	}
 
@@ -425,6 +460,35 @@ func StartTelegramBot(db *sql.DB) error {
 		return c.Send(msg)
 	})
 
+	// Handler untuk menyelesaikan pendaftaran langsung di grup: /daftarnama Nama
+	b.Handle("/daftarnama", func(c telebot.Context) error {
+		text := strings.TrimSpace(c.Text())
+		parts := strings.Fields(text)
+		if len(parts) < 2 {
+			return c.Send("❌ Gunakan: /daftarnama NAMA")
+		}
+		name := strings.Join(parts[1:], " ")
+		userID := strconv.Itoa(int(c.Sender().ID))
+		pendingID, uid, mode, awaiting, err := getPendingByTelegramUser(db, userID)
+		if err != nil || pendingID == 0 {
+			return c.Send("❌ Tidak ada pendaftaran yang menunggu untuk Anda.")
+		}
+		if !awaiting || uid == "" {
+			return c.Send("❌ Tidak ada UID yang menunggu untuk diselesaikan.")
+		}
+		isAdmin := (mode == "admin")
+		if err := completePendingRegistration(db, pendingID, uid, name, isAdmin); err == nil {
+			chatID := int(c.Chat().ID)
+			_ = sendTelegramMessage(token, chatID, "✅ UID berhasil didaftarkan: "+uid+" → "+name)
+			if cfg, cerr := GetTelegramConfig(db); cerr == nil && cfg.Enabled {
+				_ = KirimNotifikasi(cfg, "✅ Kartu baru didaftarkan: "+name+" ("+uid+")")
+			}
+			return nil
+		} else {
+			return c.Send("❌ Gagal menyimpan registrasi: " + err.Error())
+		}
+	})
+
 	b.Handle("/setjadwal", func(c telebot.Context) error {
 		text := strings.TrimSpace(c.Text())
 		parts := strings.Fields(text)
@@ -612,14 +676,16 @@ func StartTelegramBot(db *sql.DB) error {
 	// Register commands for card registration
 	b.Handle("/daftar", func(c telebot.Context) error {
 		userID := int(c.Sender().ID)
+		chatID := int(c.Chat().ID)
 		// create pending registration and instruct user to tap card
-		go handleRegisterCommand(db, token, userID, userID, "normal")
+		go handleRegisterCommand(db, token, userID, chatID, "normal")
 		return c.Send("🔔 Mode pendaftaran aktif. Silakan TAP kartu pada perangkat sekarang.")
 	})
 
 	b.Handle("/daftaradmin", func(c telebot.Context) error {
 		userID := int(c.Sender().ID)
-		go handleRegisterCommand(db, token, userID, userID, "admin")
+		chatID := int(c.Chat().ID)
+		go handleRegisterCommand(db, token, userID, chatID, "admin")
 		return c.Send("🔔 Mode pendaftaran ADMIN aktif. Silakan TAP kartu pada perangkat sekarang.")
 	})
 
