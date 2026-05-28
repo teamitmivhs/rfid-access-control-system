@@ -60,6 +60,24 @@ func main() {
 		}
 	})
 
+	// Device registration report: ESP posts UID when in registration mode
+	mux.HandleFunc("/api/device/register-report", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			handlers.RegisterReportHandler(db, w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	// Registration polling for ESP: return pending mode (normal/admin) or empty
+	mux.HandleFunc("/api/registration/pending-mode", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			handlers.GetRegistrationModeHandler(db, w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
 	// 4. Jalankan HTTP server
 	// Start weekly reset goroutine
 	go startWeeklyReset(db)

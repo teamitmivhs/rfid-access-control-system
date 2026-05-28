@@ -1,6 +1,7 @@
 #include <SPI.h>
 #include <MFRC522.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoOTA.h>
 #include <ArduinoJson.h>
@@ -86,6 +87,11 @@ int syncFailCount = 0;
 const int MAX_FAIL_BEFORE_NOTIF = 3;
 const unsigned long SYNC_INTERVAL = 3600000;           // Sync scheduled: 1 jam
 const unsigned long SYNC_STATUS_CHECK_INTERVAL = 10000; // Check pending sync: 10 detik
+
+// Registration polling state
+String registrationMode = ""; // "normal" or "admin" or ""
+unsigned long lastRegPollTime = 0;
+const unsigned long REG_POLL_INTERVAL = 5000; // 5 seconds
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 

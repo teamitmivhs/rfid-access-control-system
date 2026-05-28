@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -320,4 +321,103 @@ func DeviceHeartbeatHandler(db *sql.DB, w http.ResponseWriter, r *http.Request) 
 		"status":  "ok",
 		"message": "Heartbeat received",
 	})
+}
+
+// RegisterReportRequest: dari ESP ketika mode pendaftaran aktif dan kartu ditap
+type RegisterReportRequest struct {
+	UID  string `json:"uid"`
+	Mode string `json:"mode"` // "normal" atau "admin"
+}
+
+// RegisterReportHandler: ESP POST /api/device/register-report
+// Server mencari pending registration tanpa UID dan mengisi UID, lalu meminta nama dari Telegram user
+func RegisterReportHandler(db *sql.DB, w http.ResponseWriter, r *http.Request) {
+	var req RegisterReportRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonResponse(w, http.StatusBadRequest, models.ErrorResponse{Error: "Invalid request body"})
+		return
+	}
+
+	mode := req.Mode
+	if mode != "admin" {
+		mode = "normal"
+	}
+
+	// Find oldest pending registration without UID for this mode
+	var id int
+	var telegramUserID, chatID string
+	query := `SELECT id, telegram_user_id, chat_id FROM registration_pending WHERE uid IS NULL AND mode = ? ORDER BY created_at LIMIT 1`
+	err := db.QueryRow(query, mode).Scan(&id, &telegramUserID, &chatID)
+	if err != nil {
+		jsonResponse(w, http.StatusOK, map[string]string{"status": "no_pending", "message": "No pending registration"})
+		return
+	}
+
+	// Update pending registration with UID and mark awaiting_name = true
+	_, err = db.Exec("UPDATE registration_pending SET uid = ?, awaiting_name = TRUE WHERE id = ?", req.UID, id)
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, models.ErrorResponse{Error: "Database error"})
+		return
+	}
+
+	// Notify the Telegram user (direct message) to enter the name
+	cfg, err := GetTelegramConfig(db)
+	if err == nil && cfg.Enabled {
+		// chatID stored as string; try parse to int
+		if chatInt, parseErr := strconv.Atoi(chatID); parseErr == nil {
+			msg := "✅ UID terdeteksi: " + req.UID + "\nSilakan balas dengan NAMA pemilik UID (tanpa '/')."
+			sendTelegramMessage(cfg.Token, chatInt, msg)
+		} else {
+			// Fallback: send to default group if direct chat not parseable
+			_ = KirimNotifikasi(cfg, "✅ UID terdeteksi: "+req.UID+" — tapi chat_id tidak valid untuk DM. Mohon cek.")
+		}
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]string{"status": "ok", "message": "UID recorded"})
+}
+
+// GetRegistrationModeHandler: return the next pending registration mode for ESP to poll
+// Endpoint: GET /api/registration/pending-mode
+func GetRegistrationModeHandler(db *sql.DB, w http.ResponseWriter, r *http.Request) {
+	// Find oldest pending registration without UID
+	var mode string
+	var chatID string
+	query := `SELECT mode, chat_id FROM registration_pending WHERE uid IS NULL ORDER BY created_at LIMIT 1`
+	err := db.QueryRow(query).Scan(&mode, &chatID)
+	if err != nil {
+		// No pending registration
+		jsonResponse(w, http.StatusOK, map[string]string{"mode": "", "chat_id": ""})
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]string{"mode": mode, "chat_id": chatID})
+}
+
+// getPendingByTelegramUser: helper to fetch pending registration by telegram user id
+func getPendingByTelegramUser(db *sql.DB, telegramUserID string) (int, string, string, bool, error) {
+	var id int
+	var uid sql.NullString
+	var mode string
+	var awaiting bool
+	err := db.QueryRow("SELECT id, uid, mode, awaiting_name FROM registration_pending WHERE telegram_user_id = ? LIMIT 1", telegramUserID).Scan(&id, &uid, &mode, &awaiting)
+	if err != nil {
+		return 0, "", "", false, err
+	}
+	u := ""
+	if uid.Valid {
+		u = uid.String
+	}
+	return id, u, mode, awaiting, nil
+}
+
+// completePendingRegistration: persist new user and mark pending as completed
+func completePendingRegistration(db *sql.DB, pendingID int, uid, name string, isAdmin bool) error {
+	// Insert into users (ignore if exists)
+	_, err := db.Exec("INSERT INTO users (uid, nama, is_admin, is_active) VALUES (?, ?, ?, TRUE) ON DUPLICATE KEY UPDATE nama = VALUES(nama), is_admin = VALUES(is_admin), is_active = TRUE", uid, name, isAdmin)
+	if err != nil {
+		return err
+	}
+	// Mark pending registration removed
+	_, err = db.Exec("DELETE FROM registration_pending WHERE id = ?", pendingID)
+	return err
 }

@@ -58,6 +58,19 @@ INSERT INTO settings (setting_key, setting_value) VALUES
 ('relay_status', '0')
 ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value);
 
+-- Table for pending registrations initiated from Telegram (/daftar, /daftaradmin)
+CREATE TABLE IF NOT EXISTS registration_pending (
+	id INT PRIMARY KEY AUTO_INCREMENT,
+	telegram_user_id VARCHAR(100) NOT NULL,
+	chat_id VARCHAR(100) NOT NULL,
+	uid VARCHAR(50),
+	mode ENUM('normal','admin') NOT NULL DEFAULT 'normal',
+	awaiting_name BOOLEAN DEFAULT FALSE,
+	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+	UNIQUE KEY unique_telegram_user (telegram_user_id)
+);
+
 -- Sample data: Admin users
 INSERT IGNORE INTO users (uid, nama, is_admin) VALUES
 ('938934FF', 'ALVARO', TRUE),
