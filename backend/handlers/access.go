@@ -369,20 +369,22 @@ func RegisterReportHandler(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 	// Notify the Telegram user (direct message) to enter the name
 	cfg, err := GetTelegramConfig(db)
 	if err == nil && cfg.Enabled {
-		// chatID stored as string; try parse to int
+		// Always notify the configured group first so operators see the UID immediately
+		groupMsg := "🔔 UID terdeteksi: " + req.UID + "\nOperator: mohon balas dengan NAMA pemilik UID (tanpa '/')."
+		_ = KirimNotifikasi(cfg, groupMsg)
+
+		// chatID stored as string; try parse to int for DM
 		if chatInt, parseErr := strconv.Atoi(chatID); parseErr == nil {
-			msg := "✅ UID terdeteksi: " + req.UID + "\nSilakan balas dengan NAMA pemilik UID (tanpa '/')."
-			if err := sendTelegramMessage(cfg.Token, chatInt, msg); err != nil {
+			dmMsg := "✅ UID terdeteksi: " + req.UID + "\nSilakan balas dengan NAMA pemilik UID (tanpa '/')."
+			if err := sendTelegramMessage(cfg.Token, chatInt, dmMsg); err != nil {
 				log.Println("RegisterReportHandler: failed to send DM to user:", err)
-				// fallback to group notification
-				_ = KirimNotifikasi(cfg, "✅ UID terdeteksi: "+req.UID+" — tapi gagal DM user. Mohon cek.")
+				// DM failed, group already notified
 			} else {
 				log.Printf("RegisterReportHandler: DM sent to telegram_user_id=%s chat_id=%s", telegramUserID, chatID)
 			}
 		} else {
-			// Fallback: send to default group if direct chat not parseable
-			log.Println("RegisterReportHandler: chat_id parse error, using group notification")
-			_ = KirimNotifikasi(cfg, "✅ UID terdeteksi: "+req.UID+" — tapi chat_id tidak valid untuk DM. Mohon cek.")
+			// chat id parsing failed; group already notified
+			log.Println("RegisterReportHandler: chat_id parse error, group notified")
 		}
 	} else if err != nil {
 		log.Println("RegisterReportHandler: GetTelegramConfig error:", err)

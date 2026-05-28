@@ -259,22 +259,27 @@ void checkRegistrationMode() {
   WiFiClient client;
   String url = String("http://") + API_HOST + ":" + String(API_PORT) + "/api/registration/pending-mode";
   if (!http.begin(client, url)) {
-    Serial.println("❌ Failed begin registration-mode request");
+    Serial.println("❌ Failed begin registration-mode request: " + url);
     return;
   }
+
   int httpCode = http.GET();
+  String resp = "";
+  if (httpCode > 0) resp = http.getString();
+  Serial.println("Registration-mode check HTTP " + String(httpCode) + " resp: " + resp);
+
   if (httpCode != 200) {
-    // no pending or error
+    // no pending or error; keep verbose logging to help diagnose backend
     http.end();
     return;
   }
-  String resp = http.getString();
+
   http.end();
 
-  DynamicJsonDocument doc(256);
+  DynamicJsonDocument doc(512);
   DeserializationError err = deserializeJson(doc, resp);
   if (err) {
-    Serial.println("❌ JSON parse error (reg mode): " + String(err.c_str()));
+    Serial.println("❌ JSON parse error (reg mode): " + String(err.c_str()) + " -- body: " + resp);
     return;
   }
   String mode = doc["mode"].as<String>();
@@ -413,6 +418,22 @@ void setup() {
 
 void loop() {
   ArduinoOTA.handle();
+  // Serial command handler for debugging/testing
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+    if (cmd.length() > 0) {
+      Serial.println("Serial cmd: " + cmd);
+      if (cmd.equalsIgnoreCase("CLEAR_REG") || cmd.equalsIgnoreCase("CLEAR")) {
+        registrationMode = "";
+        Serial.println("Registration mode cleared via serial");
+      } else if (cmd.equalsIgnoreCase("SHOW_REG")) {
+        Serial.println("registrationMode: " + registrationMode);
+      } else if (cmd.equalsIgnoreCase("HELP")) {
+        Serial.println("Serial commands: CLEAR_REG, SHOW_REG, HELP");
+      }
+    }
+  }
   
   static unsigned long lastReconnectAttempt = 0;
   static int reconnectFailCount = 0;
