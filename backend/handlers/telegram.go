@@ -412,6 +412,8 @@ func StartTelegramBot(db *sql.DB) error {
 
 	b.Handle("/help", func(c telebot.Context) error {
 		msg := "📖 Daftar Commands:\n\n" +
+			"• /daftar\n  Daftarkan kartu baru (ikuti instruksi: tap kartu lalu balas dengan NAMA tanpa '/')\n\n" +
+			"• /daftaradmin\n  Daftarkan kartu admin (tap kartu lalu balas dengan NAMA tanpa '/')\n\n" +
 			"• /setjadwal [hari] [nama1, nama2, ...]\n  Set jadwal akses untuk hari tertentu\n\n" +
 			"• /lihatjadwal [hari]\n  Lihat jadwal akses (atau tanpa argumen untuk semua hari)\n\n" +
 			"• /database\n  Lihat daftar pengguna dan UID dari database\n\n" +
