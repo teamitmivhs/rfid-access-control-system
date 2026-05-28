@@ -78,6 +78,15 @@ func main() {
 		}
 	})
 
+	// Sync status endpoint used by ESP to check whether /sync was requested
+	mux.HandleFunc("/api/sync-status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			handlers.GetSyncStatusHandler(db, w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
 	// 4. Jalankan HTTP server
 	// Start weekly reset goroutine
 	go startWeeklyReset(db)

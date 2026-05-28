@@ -343,22 +343,28 @@ func RegisterReportHandler(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 		mode = "normal"
 	}
 
+	log.Printf("RegisterReportHandler: received UID=%s mode=%s", req.UID, mode)
+
 	// Find oldest pending registration without UID for this mode
 	var id int
 	var telegramUserID, chatID string
 	query := `SELECT id, telegram_user_id, chat_id FROM registration_pending WHERE uid IS NULL AND mode = ? ORDER BY created_at LIMIT 1`
 	err := db.QueryRow(query, mode).Scan(&id, &telegramUserID, &chatID)
 	if err != nil {
+		log.Println("RegisterReportHandler: no pending registration found for mode", mode)
 		jsonResponse(w, http.StatusOK, map[string]string{"status": "no_pending", "message": "No pending registration"})
 		return
 	}
 
 	// Update pending registration with UID and mark awaiting_name = true
-	_, err = db.Exec("UPDATE registration_pending SET uid = ?, awaiting_name = TRUE WHERE id = ?", req.UID, id)
+	res, err := db.Exec("UPDATE registration_pending SET uid = ?, awaiting_name = TRUE, updated_at = NOW() WHERE id = ?", req.UID, id)
 	if err != nil {
+		log.Println("RegisterReportHandler: failed update pending registration:", err)
 		jsonResponse(w, http.StatusInternalServerError, models.ErrorResponse{Error: "Database error"})
 		return
 	}
+	affected, _ := res.RowsAffected()
+	log.Printf("RegisterReportHandler: updated pending id=%d, rowsAffected=%d", id, affected)
 
 	// Notify the Telegram user (direct message) to enter the name
 	cfg, err := GetTelegramConfig(db)
@@ -366,11 +372,20 @@ func RegisterReportHandler(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 		// chatID stored as string; try parse to int
 		if chatInt, parseErr := strconv.Atoi(chatID); parseErr == nil {
 			msg := "✅ UID terdeteksi: " + req.UID + "\nSilakan balas dengan NAMA pemilik UID (tanpa '/')."
-			sendTelegramMessage(cfg.Token, chatInt, msg)
+			if err := sendTelegramMessage(cfg.Token, chatInt, msg); err != nil {
+				log.Println("RegisterReportHandler: failed to send DM to user:", err)
+				// fallback to group notification
+				_ = KirimNotifikasi(cfg, "✅ UID terdeteksi: "+req.UID+" — tapi gagal DM user. Mohon cek.")
+			} else {
+				log.Printf("RegisterReportHandler: DM sent to telegram_user_id=%s chat_id=%s", telegramUserID, chatID)
+			}
 		} else {
 			// Fallback: send to default group if direct chat not parseable
+			log.Println("RegisterReportHandler: chat_id parse error, using group notification")
 			_ = KirimNotifikasi(cfg, "✅ UID terdeteksi: "+req.UID+" — tapi chat_id tidak valid untuk DM. Mohon cek.")
 		}
+	} else if err != nil {
+		log.Println("RegisterReportHandler: GetTelegramConfig error:", err)
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]string{"status": "ok", "message": "UID recorded"})

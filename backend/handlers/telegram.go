@@ -181,7 +181,7 @@ func TelegramWebhookHandler(db *sql.DB, botToken string, w http.ResponseWriter, 
 	}
 
 	// Unknown command or message
-	sendTelegramMessage(botToken, chatID, "❓ Command tidak dikenal. Gunakan:\n/daftar - Daftar kartu baru\n/daftaradmin - Daftar admin baru\n/sync - Sync kartu dari database\n/status - Lihat status pintu")
+	_ = sendTelegramMessage(botToken, chatID, "❓ Command tidak dikenal. Gunakan:\n/daftar - Daftar kartu baru\n/daftaradmin - Daftar admin baru\n/sync - Sync kartu dari database\n/status - Lihat status pintu")
 	jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -196,7 +196,7 @@ func handleSyncCommand(db *sql.DB, botToken string, chatID int) {
 	_, err := db.Exec(query)
 	if err != nil {
 		log.Println("❌ Error setting sync_pending:", err)
-		sendTelegramMessage(botToken, chatID, "❌ Error: Gagal set sync flag")
+		_ = sendTelegramMessage(botToken, chatID, "❌ Error: Gagal set sync flag")
 		return
 	}
 
@@ -216,7 +216,7 @@ func handleSyncCommand(db *sql.DB, botToken string, chatID int) {
 		"🔄 SYNC DIPICU\nESP32 akan sync kartu pada loop berikutnya\nWaktu: %s",
 		time.Now().Format("15:04:05"),
 	)
-	sendTelegramMessage(botToken, chatID, message)
+	_ = sendTelegramMessage(botToken, chatID, message)
 	log.Println("✅ /sync command received - sync_pending set to true")
 }
 
@@ -282,16 +282,16 @@ func handleRegisterCommand(db *sql.DB, botToken string, telegramUserID int, chat
 	if _, err := db.Exec(query, userStr, chatStr, mode); err != nil {
 		log.Println("❌ Failed to create pending registration:", err)
 		// try to notify in chat if possible
-		sendTelegramMessage(botToken, telegramUserID, "❌ Gagal aktifkan mode pendaftaran: "+err.Error())
+		_ = sendTelegramMessage(botToken, telegramUserID, "❌ Gagal aktifkan mode pendaftaran: "+err.Error())
 		return
 	}
 
 	// Ask user to tap card (DM)
-	sendTelegramMessage(botToken, telegramUserID, "🔔 Mode pendaftaran diaktifkan. Silakan TAP kartu pada perangkat sekarang.")
+	_ = sendTelegramMessage(botToken, telegramUserID, "🔔 Mode pendaftaran diaktifkan. Silakan TAP kartu pada perangkat sekarang.")
 }
 
 // sendTelegramMessage: Kirim pesan ke Telegram
-func sendTelegramMessage(botToken string, chatID int, text string) {
+func sendTelegramMessage(botToken string, chatID int, text string) error {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", botToken)
 
 	payload := map[string]interface{}{
@@ -302,19 +302,22 @@ func sendTelegramMessage(botToken string, chatID int, text string) {
 	jsonPayload, err := json.Marshal(payload)
 	if err != nil {
 		log.Println("❌ Error marshaling JSON:", err)
-		return
+		return err
 	}
 
 	resp, err := http.Post(url, "application/json", strings.NewReader(string(jsonPayload)))
 	if err != nil {
 		log.Println("❌ Error sending Telegram message:", err)
-		return
+		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		log.Printf("⚠️  Telegram returned status %d\n", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("⚠️  Telegram returned status %d: %s\n", resp.StatusCode, string(body))
+		return fmt.Errorf("telegram returned status %d", resp.StatusCode)
 	}
+	return nil
 }
 
 // StartTelegramBot: Inicialisasi Telegram bot pada startup.
