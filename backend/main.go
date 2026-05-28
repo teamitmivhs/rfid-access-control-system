@@ -1,10 +1,12 @@
 package main
 
 import (
+	"database/sql"
 	"door-lock-system/config"
 	"door-lock-system/handlers"
 	"log"
 	"net/http"
+	"time"
 )
 
 func main() {
@@ -59,8 +61,48 @@ func main() {
 	})
 
 	// 4. Jalankan HTTP server
+	// Start weekly reset goroutine
+	go startWeeklyReset(db)
+
 	log.Println("🚀 Server running on :8081")
 	if err := http.ListenAndServe(":8081", mux); err != nil {
 		log.Fatal("Server error:", err)
+	}
+}
+
+// startWeeklyReset: Wipe schedules every Monday (once per week) and record last reset date in settings.
+func startWeeklyReset(db *sql.DB) {
+	for {
+		now := time.Now()
+		// compute next check at next day's 00:05
+		next := time.Date(now.Year(), now.Month(), now.Day(), 0, 5, 0, 0, now.Location()).Add(24 * time.Hour)
+		sleep := time.Until(next)
+		if sleep < 0 {
+			sleep = 1 * time.Minute
+		}
+		time.Sleep(sleep)
+
+		today := time.Now()
+		if today.Weekday() == time.Monday {
+			// Check last reset
+			var lastReset string
+			_ = db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = 'last_weekly_reset'").Scan(&lastReset)
+			todayStr := today.Format("2006-01-02")
+			if lastReset != todayStr {
+				// Perform wipe
+				if _, err := db.Exec("DELETE FROM schedules"); err != nil {
+					log.Println("❌ Failed to wipe schedules:", err)
+				} else {
+					log.Println("✅ Weekly schedules wiped (Monday):", todayStr)
+					// record last reset
+					_, _ = db.Exec("INSERT INTO settings (setting_key, setting_value) VALUES ('last_weekly_reset', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)", todayStr)
+
+					// Try notify via Telegram if configured
+					if cfg, err := handlers.GetTelegramConfig(db); err == nil && cfg.Enabled {
+						_ = handlers.KirimNotifikasi(cfg, "🧹 Jadwal mingguan telah di-reset. Silakan konfigurasi ulang jadwal untuk minggu ini.")
+					}
+				}
+			}
+		}
 	}
 }

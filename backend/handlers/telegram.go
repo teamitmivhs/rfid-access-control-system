@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -37,6 +38,73 @@ type TelegramResponse struct {
 	OK     bool                   `json:"ok"`
 	Result map[string]interface{} `json:"result,omitempty"`
 	Error  string                 `json:"error_description,omitempty"`
+}
+
+// TelegramConfig: Konfigurasi bot yang dibaca dari tabel settings di database
+type TelegramConfig struct {
+	Token   string
+	ChatID  string
+	Enabled bool
+}
+
+// GetTelegramConfig: Baca token dan chat_id dari tabel settings
+func GetTelegramConfig(db *sql.DB) (*TelegramConfig, error) {
+	cfg := &TelegramConfig{}
+
+	rows, err := db.Query("SELECT setting_key, setting_value FROM settings WHERE setting_key IN ('telegram_token','telegram_chat_id','telegram_enabled')")
+	if err != nil {
+		return nil, fmt.Errorf("failed to query telegram settings: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			continue
+		}
+		switch key {
+		case "telegram_token":
+			cfg.Token = value
+		case "telegram_chat_id":
+			cfg.ChatID = value
+		case "telegram_enabled":
+			cfg.Enabled = (value == "true")
+		}
+	}
+
+	if cfg.Token == "" {
+		return nil, fmt.Errorf("telegram_token belum diisi di tabel settings")
+	}
+	if cfg.ChatID == "" {
+		return nil, fmt.Errorf("telegram_chat_id belum diisi di tabel settings")
+	}
+
+	return cfg, nil
+}
+
+// KirimNotifikasi: Kirim pesan ke grup Telegram dari sisi server.
+func KirimNotifikasi(cfg *TelegramConfig, pesan string) error {
+	if !cfg.Enabled {
+		return nil
+	}
+
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", cfg.Token)
+
+	resp, err := http.PostForm(apiURL, url.Values{
+		"chat_id": {cfg.ChatID},
+		"text":    {pesan},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to send telegram message: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("telegram API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
 }
 
 // TelegramWebhookHandler: Handle incoming updates dari Telegram

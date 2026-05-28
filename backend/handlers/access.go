@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"door-lock-system/models"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -60,6 +61,11 @@ func VerifyAccessHandler(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 	// Cek jika user adalah admin - bypass jadwal
 	if user.IsAdmin {
 		logAccess(db, &user.ID, req.UID, user.Nama, "GRANTED")
+		// send telegram notification (non-blocking)
+		if cfg, err := GetTelegramConfig(db); err == nil && cfg.Enabled {
+			msg := fmt.Sprintf("✅ ACCESS GRANTED\nNama: %s\nKartu: %s\nTipe: ADMIN\n%s", user.Nama, req.UID, time.Now().Format("02-01-2006 15:04:05"))
+			go KirimNotifikasi(cfg, msg)
+		}
 		jsonResponse(w, http.StatusOK, models.AccessResponse{
 			Allowed: true,
 			Name:    user.Nama,
@@ -94,6 +100,10 @@ func VerifyAccessHandler(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 
 	if isScheduled {
 		logAccess(db, &user.ID, req.UID, user.Nama, "GRANTED")
+		if cfg, err := GetTelegramConfig(db); err == nil && cfg.Enabled {
+			msg := fmt.Sprintf("✅ ACCESS GRANTED\nNama: %s\nKartu: %s\nTipe: SCHEDULED\n%s", user.Nama, req.UID, time.Now().Format("02-01-2006 15:04:05"))
+			go KirimNotifikasi(cfg, msg)
+		}
 		jsonResponse(w, http.StatusOK, models.AccessResponse{
 			Allowed: true,
 			Name:    user.Nama,
@@ -101,6 +111,10 @@ func VerifyAccessHandler(db *sql.DB, w http.ResponseWriter, r *http.Request) {
 		})
 	} else {
 		logAccess(db, &user.ID, req.UID, user.Nama, "SCHEDULE_DENIED")
+		if cfg, err := GetTelegramConfig(db); err == nil && cfg.Enabled {
+			msg := fmt.Sprintf("❌ ACCESS DENIED\nKartu: %s\nNama: %s\nAlasan: Not authorized\n%s", req.UID, user.Nama, time.Now().Format("02-01-2006 15:04:05"))
+			go KirimNotifikasi(cfg, msg)
+		}
 		jsonResponse(w, http.StatusOK, models.AccessResponse{
 			Allowed: false,
 			Name:    user.Nama,
