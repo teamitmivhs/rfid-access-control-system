@@ -187,6 +187,29 @@ func sendTelegramMessage(botToken string, chatID int, text string) {
 	}
 }
 
+// StartTelegramBot: Inicialisasi Telegram bot pada startup.
+// Implementasi minimal karena aplikasi menggunakan webhook handler.
+// Memeriksa konfigurasi di tabel settings dan hanya mencatat status.
+func StartTelegramBot(db *sql.DB) error {
+	var token, enabled string
+	_ = db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = 'telegram_token'").Scan(&token)
+	_ = db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = 'telegram_enabled'").Scan(&enabled)
+
+	if token == "" {
+		log.Println("Telegram token tidak ditemukan di settings; bot tidak di-start")
+		return nil
+	}
+	if strings.ToLower(enabled) != "true" {
+		log.Println("Telegram disabled di settings; bot tidak di-start")
+		return nil
+	}
+
+	// Server menggunakan webhook handler (/telegram/webhook).
+	// Tidak perlu membuat long-polling bot di sini; cukup log konfigurasi.
+	log.Println("Telegram configured (webhook). Token present; webhook endpoint aktif if configured.")
+	return nil
+}
+
 // ===== UNTUK ESP32 =====
 
 // GetSyncStatusHandler: Endpoint untuk ESP32 check apakah ada pending sync
