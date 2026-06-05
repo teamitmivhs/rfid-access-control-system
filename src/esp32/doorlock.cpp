@@ -10,6 +10,8 @@
 void bener();
 void salah();
 void buka();
+void beepRegistrationReady();
+void beepRegistrationSuccess();
 void kirimPesan(String pesan);
 String getWaktuDanTanggal();
 String getHari();
@@ -287,6 +289,7 @@ void checkRegistrationMode() {
     registrationMode = mode;
     if (registrationMode != "") {
       Serial.println("🔔 Registration mode active: " + registrationMode);
+      beepRegistrationReady();
     } else {
       Serial.println("🔕 No registration pending");
     }
@@ -563,8 +566,7 @@ void loop() {
     bool ok = postRegisterReport(kartu, registrationMode);
     if (ok) {
       Serial.println("✅ UID posted for registration: " + kartu);
-      // short beep to acknowledge
-      digitalWrite(BUZ_PIN, HIGH); delay(100); digitalWrite(BUZ_PIN, LOW);
+      beepRegistrationSuccess();
       // server will clear pending when UID saved; clear local mode until poll updates
       registrationMode = "";
     } else {
@@ -592,6 +594,22 @@ void loop() {
   }
 
   mfrc522.PICC_HaltA();
+}
+
+void beepRegistrationReady() {
+  digitalWrite(BUZ_PIN, HIGH);
+  delay(120);
+  digitalWrite(BUZ_PIN, LOW);
+}
+
+void beepRegistrationSuccess() {
+  digitalWrite(BUZ_PIN, HIGH);
+  delay(80);
+  digitalWrite(BUZ_PIN, LOW);
+  delay(60);
+  digitalWrite(BUZ_PIN, HIGH);
+  delay(80);
+  digitalWrite(BUZ_PIN, LOW);
 }
 
 void bener() {
