@@ -19,7 +19,7 @@ String getHari();
 String urlEncode(String str);
 bool verifyAccessLocal(String uid, String &nama);
 bool verifyAccessServer(String uid, String &nama);
-void syncCardsFromServer();
+bool syncCardsFromServer();
 void checkAndExecutePendingSync();
 void confirmSyncCompleted();
 void sendHeartbeat();
@@ -139,10 +139,10 @@ bool verifyAccessServer(String uid, String &nama) {
 }
 
 // === UPDATED: Sync dari server (simplified, no TCP test) ===
-void syncCardsFromServer() {
+bool syncCardsFromServer() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("⚠️  WiFi not connected, skipping sync");
-    return;
+    return false;
   }
 
   Serial.println("\n🔄 Syncing scheduled cards from server...");
@@ -163,7 +163,7 @@ void syncCardsFromServer() {
       kirimPesan("⚠️ SYNC GAGAL\nHTTP begin failed\nGagal: " + String(syncFailCount) + "x\n" + getWaktuDanTanggal());
       syncFailCount = 0;
     }
-    return;
+    return false;
   }
 
   int httpCode = http.GET();
@@ -177,7 +177,7 @@ void syncCardsFromServer() {
       kirimPesan("⚠️ SYNC GAGAL - HTTP " + String(httpCode) + "\nGagal: " + String(syncFailCount) + "x\n" + getWaktuDanTanggal());
       syncFailCount = 0;
     }
-    return;
+    return false;
   }
 
   String response = http.getString();
@@ -189,7 +189,7 @@ void syncCardsFromServer() {
 
   if (error) {
     Serial.println("❌ JSON parse error: " + String(error.c_str()));
-    return;
+    return false;
   }
 
   serverCardCount = 0;
@@ -212,6 +212,7 @@ void syncCardsFromServer() {
   syncFailCount = 0;
 
   Serial.println("✅ Sync complete! " + String(serverCardCount) + " cards loaded for " + doc["hari"].as<String>());
+  return true;
 }
 
 // === NEW: Check apakah ada pending sync dari Telegram ===
@@ -255,11 +256,14 @@ void checkAndExecutePendingSync() {
     Serial.println("\n📲 PENDING SYNC DETECTED FROM TELEGRAM!");
     Serial.println("Executing sync now...");
     
-    syncCardsFromServer();
-    
-    // Confirm sync ke server
-    delay(1000);
-    confirmSyncCompleted();
+    bool syncSucceeded = syncCardsFromServer();
+    lastSyncTime = millis();
+
+    if (syncSucceeded) {
+      // Confirm sync ke server only after the new card list is valid.
+      delay(1000);
+      confirmSyncCompleted();
+    }
   }
 }
 
@@ -466,6 +470,7 @@ void setup() {
 
   Serial.println("\n📥 Syncing scheduled cards from server...");
   syncCardsFromServer();
+  lastSyncTime = millis();
 
   kirimPesan("Door LOCK online\n" + getWaktuDanTanggal() + "\n" + getHari());
 
@@ -508,19 +513,19 @@ void loop() {
     sendHeartbeat();
   }
 
-  // === SCHEDULED SYNC (1 jam sekali) ===
-  if (WiFi.status() == WL_CONNECTED) {
-    if (lastSyncTime == 0 || (millis() - lastSyncTime >= SYNC_INTERVAL)) {
-      lastSyncTime = millis();
-      syncCardsFromServer();
-    }
-  }
-
-  // === PENDING SYNC CHECK (10 detik sekali) ===
+  // === PENDING SYNC CHECK (60 detik sekali) ===
   if (WiFi.status() == WL_CONNECTED) {
     if (lastSyncStatusCheckTime == 0 || (millis() - lastSyncStatusCheckTime >= SYNC_STATUS_CHECK_INTERVAL)) {
       lastSyncStatusCheckTime = millis();
       checkAndExecutePendingSync();  // ← Cek apakah ada /sync dari Telegram
+    }
+  }
+
+  // === SCHEDULED SYNC (1 jam sekali) ===
+  if (WiFi.status() == WL_CONNECTED) {
+    if (millis() - lastSyncTime >= SYNC_INTERVAL) {
+      lastSyncTime = millis();
+      syncCardsFromServer();
     }
   }
 
