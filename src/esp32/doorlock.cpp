@@ -5,13 +5,14 @@
 #include <HTTPClient.h>
 #include <ArduinoOTA.h>
 #include <ArduinoJson.h>
+#include <esp_system.h>
+#include <esp_timer.h>
+#include <esp_wifi.h>
 #include <time.h>
 
 void bener();
 void salah();
 void buka();
-void beepRegistrationReady();
-void beepRegistrationSuccess();
 void kirimPesan(String pesan);
 String getWaktuDanTanggal();
 String getHari();
@@ -21,11 +22,14 @@ bool verifyAccessServer(String uid, String &nama);
 void syncCardsFromServer();
 void checkAndExecutePendingSync();
 void confirmSyncCompleted();
+void sendHeartbeat();
 
 const char* ssid     = "TEAM IT MIVHS";
 const char* password = "1TM1TR4101101MIVHS2025PASTIBISA2026SELALULANCAR2027GENERASI2028";
 const char* API_HOST = "192.168.107.37"; 
 const int   API_PORT = 8081;
+const int8_t WIFI_TX_POWER = 60; // 15 dBm; turunkan ke 44 jika suplai kembali tidak stabil
+const uint16_t LOCAL_HTTP_TIMEOUT = 2500;
 
 String BOT_TOKEN = "8683423891:AAFTBmo3owh5sA0MGPgvX5IpZv3lI7iFYFc";
 String CHAT_ID   = "-1003302843795";
@@ -57,9 +61,10 @@ unsigned long relay_active_time   = 0;
 bool relay_is_active              = false;
 const unsigned long DEBOUNCE_DELAY = 50;
 const unsigned long RELAY_HOLD_TIME = 2000;
+const unsigned long RFID_HEALTH_CHECK_INTERVAL = 5000;
 
 //kartu admin
-const int jumlah_kartu = 6;
+const int jumlah_kartu = 7;
 const String daftarUID[jumlah_kartu] = {
   "938934FF",  // ALVARO
   "2DCC8C8B",  // AKBAR
@@ -67,6 +72,8 @@ const String daftarUID[jumlah_kartu] = {
   "EF76D91E",  // RAIHAN
   "55E2FD52",  // HEAS
   "0284BB1B",  // FERI
+  "43BD0A03", //SUHAIMI
+
 };
 
 const String daftarNama[jumlah_kartu] = {
@@ -76,6 +83,7 @@ const String daftarNama[jumlah_kartu] = {
   "RAIHAN (ADMIN)",
   "HEAS (ADMIN)",
   "FERI (ADMIN)",
+  "SUHAIMI (ADMIN)",
 };
 
 //kartu dari server
@@ -85,10 +93,12 @@ String serverCardNama[MAX_SERVER_CARDS];
 int serverCardCount = 0;
 unsigned long lastSyncTime = 0;
 unsigned long lastSyncStatusCheckTime = 0;
+unsigned long lastHeartbeatTime = 0;
 int syncFailCount = 0;
 const int MAX_FAIL_BEFORE_NOTIF = 3;
 const unsigned long SYNC_INTERVAL = 3600000;           // Sync scheduled: 1 jam
 const unsigned long SYNC_STATUS_CHECK_INTERVAL = 60000; // Check pending sync: 60 detik
+const unsigned long HEARTBEAT_INTERVAL = 60000;         // Status ringan: 60 detik
 
 // Registration polling state
 String registrationMode = ""; // "normal" or "admin" or ""
@@ -140,8 +150,8 @@ void syncCardsFromServer() {
   HTTPClient http;
   WiFiClient client;
   
-  http.setTimeout(15000);
-  http.setConnectTimeout(10000);
+  http.setTimeout(LOCAL_HTTP_TIMEOUT);
+  http.setConnectTimeout(LOCAL_HTTP_TIMEOUT);
   
   String url = "http://192.168.107.37:8081/api/cards/scheduled-today";
   Serial.println("URL: " + url);
@@ -212,6 +222,8 @@ void checkAndExecutePendingSync() {
 
   HTTPClient http;
   WiFiClient client;
+  http.setTimeout(LOCAL_HTTP_TIMEOUT);
+  http.setConnectTimeout(LOCAL_HTTP_TIMEOUT);
   
   String url = "http://192.168.107.37:8081/api/sync-status";
   
@@ -259,6 +271,8 @@ void checkRegistrationMode() {
 
   HTTPClient http;
   WiFiClient client;
+  http.setTimeout(LOCAL_HTTP_TIMEOUT);
+  http.setConnectTimeout(LOCAL_HTTP_TIMEOUT);
   String url = String("http://") + API_HOST + ":" + String(API_PORT) + "/api/registration/pending-mode";
   if (!http.begin(client, url)) {
     Serial.println("❌ Failed begin registration-mode request: " + url);
@@ -289,7 +303,6 @@ void checkRegistrationMode() {
     registrationMode = mode;
     if (registrationMode != "") {
       Serial.println("🔔 Registration mode active: " + registrationMode);
-      beepRegistrationReady();
     } else {
       Serial.println("🔕 No registration pending");
     }
@@ -301,6 +314,8 @@ bool postRegisterReport(String uid, String mode) {
   if (WiFi.status() != WL_CONNECTED) return false;
   HTTPClient http;
   WiFiClient client;
+  http.setTimeout(LOCAL_HTTP_TIMEOUT);
+  http.setConnectTimeout(LOCAL_HTTP_TIMEOUT);
   String url = String("http://") + API_HOST + ":" + String(API_PORT) + "/api/device/register-report";
   if (!http.begin(client, url)) {
     Serial.println("❌ HTTP begin failed (register-report)");
@@ -335,6 +350,8 @@ void confirmSyncCompleted() {
 
   HTTPClient http;
   WiFiClient client;
+  http.setTimeout(LOCAL_HTTP_TIMEOUT);
+  http.setConnectTimeout(LOCAL_HTTP_TIMEOUT);
   
   String url = "http://192.168.107.37:8081/api/confirm-sync";
   
@@ -348,10 +365,41 @@ void confirmSyncCompleted() {
   http.end();
 }
 
+void sendHeartbeat() {
+  if (WiFi.status() != WL_CONNECTED || relay_is_active || logika3) return;
+
+  HTTPClient http;
+  WiFiClient client;
+  http.setTimeout(LOCAL_HTTP_TIMEOUT);
+  http.setConnectTimeout(LOCAL_HTTP_TIMEOUT);
+
+  String url = String("http://") + API_HOST + ":" + String(API_PORT) + "/api/device/heartbeat";
+  if (!http.begin(client, url)) return;
+  http.addHeader("Content-Type", "application/json");
+
+  DynamicJsonDocument doc(256);
+  doc["device_type"] = "ESP32-C6";
+  doc["device_name"] = "RFID Door Lock";
+  doc["relay_status"] = "0";
+  doc["wifi_strength"] = WiFi.RSSI();
+  doc["free_memory"] = ESP.getFreeHeap();
+  doc["uptime"] = esp_timer_get_time() / 1000000LL;
+
+  String payload;
+  serializeJson(doc, payload);
+  int httpCode = http.POST(payload);
+  http.end();
+  Serial.println("Heartbeat HTTP " + String(httpCode));
+}
+
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
   delay(1000);
   Serial.println("\n\n=== DOOR LOCK STARTING ===");
+  esp_reset_reason_t resetReason = esp_reset_reason();
+  Serial.printf("Reset reason: %d%s\n", (int)resetReason,
+    resetReason == ESP_RST_SW ? " (software)" :
+    resetReason == ESP_RST_BROWNOUT ? " (brownout)" : "");
   
   pinMode(RLY_PIN, OUTPUT);
   Serial.println("RLY_PIN: " + String(RLY_PIN));
@@ -390,8 +438,14 @@ void setup() {
     Serial.print(".");
     wifiTimeout++;
   }
-  Serial.println("\nConnected!");
-  Serial.println(WiFi.localIP());
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nConnected!");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("\nWiFi timeout; continuing offline");
+  }
+  Serial.printf("WiFi TX power: %s\n",
+    esp_wifi_set_max_tx_power(WIFI_TX_POWER) == ESP_OK ? "15 dBm" : "set failed");
 
   // Reduce WiFi power usage: enable modem-sleep (reduces power, adds latency)
   WiFi.setSleep(true);
@@ -439,46 +493,19 @@ void loop() {
   }
   
   static unsigned long lastReconnectAttempt = 0;
-  static int reconnectFailCount = 0;
-  // If disconnected, try reconnecting every 5 seconds with more diagnostics
+  // Reconnect tanpa delay dan tanpa me-restart MCU agar RFID tetap responsif.
   if (WiFi.status() != WL_CONNECTED) {
     if (millis() - lastReconnectAttempt > 5000) {
       lastReconnectAttempt = millis();
       Serial.println("WiFi disconnected, attempting reconnect...");
-
-      // Try a light reconnect first
       WiFi.reconnect();
-      delay(1000);
-      int st = WiFi.status();
-      Serial.print("WiFi.status after reconnect(): "); Serial.println(st);
-
-      if (st == WL_CONNECTED) {
-        reconnectFailCount = 0;
-        Serial.print("Reconnected, RSSI: "); Serial.println(WiFi.RSSI());
-      } else {
-        reconnectFailCount++;
-        Serial.print("Reconnect attempt failed (#"); Serial.print(reconnectFailCount); Serial.println(")");
-        // If many consecutive failures, try a fresh begin
-        if (reconnectFailCount >= 3) {
-          Serial.println("Reconnect failing repeatedly, calling WiFi.disconnect() then WiFi.begin()...");
-          WiFi.disconnect(true);
-          delay(500);
-          WiFi.begin(ssid, password);
-          delay(2000);
-          if (WiFi.status() == WL_CONNECTED) {
-            reconnectFailCount = 0;
-            Serial.print("Reconnected after fresh begin, RSSI: "); Serial.println(WiFi.RSSI());
-          }
-        }
-
-        // If still failing many times, restart the MCU as last resort
-        if (reconnectFailCount >= 10) {
-          Serial.println("Too many reconnect failures, restarting ESP...");
-          delay(200);
-          ESP.restart();
-        }
-      }
     }
+  }
+
+  if (WiFi.status() == WL_CONNECTED && !relay_is_active && !logika3 &&
+      millis() - lastHeartbeatTime >= HEARTBEAT_INTERVAL) {
+    lastHeartbeatTime = millis();
+    sendHeartbeat();
   }
 
   // === SCHEDULED SYNC (1 jam sekali) ===
@@ -547,6 +574,16 @@ void loop() {
     if (logika3) { logika3 = false; jeda1 = jeda2; }
   }
 
+  static unsigned long lastRfidHealthCheck = 0;
+  if (millis() - lastRfidHealthCheck >= RFID_HEALTH_CHECK_INTERVAL) {
+    lastRfidHealthCheck = millis();
+    byte version = mfrc522.PCD_ReadRegister(MFRC522::VersionReg);
+    if (version == 0x00 || version == 0xFF) {
+      Serial.println("RFID tidak merespons, reinitializing...");
+      mfrc522.PCD_Init();
+    }
+  }
+
   if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) return;
 
   String kartu = "";
@@ -566,7 +603,8 @@ void loop() {
     bool ok = postRegisterReport(kartu, registrationMode);
     if (ok) {
       Serial.println("✅ UID posted for registration: " + kartu);
-      beepRegistrationSuccess();
+      // short beep to acknowledge
+      digitalWrite(BUZ_PIN, HIGH); delay(100); digitalWrite(BUZ_PIN, LOW);
       // server will clear pending when UID saved; clear local mode until poll updates
       registrationMode = "";
     } else {
@@ -594,22 +632,6 @@ void loop() {
   }
 
   mfrc522.PICC_HaltA();
-}
-
-void beepRegistrationReady() {
-  digitalWrite(BUZ_PIN, HIGH);
-  delay(120);
-  digitalWrite(BUZ_PIN, LOW);
-}
-
-void beepRegistrationSuccess() {
-  digitalWrite(BUZ_PIN, HIGH);
-  delay(80);
-  digitalWrite(BUZ_PIN, LOW);
-  delay(60);
-  digitalWrite(BUZ_PIN, HIGH);
-  delay(80);
-  digitalWrite(BUZ_PIN, LOW);
 }
 
 void bener() {
