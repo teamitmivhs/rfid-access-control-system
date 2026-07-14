@@ -414,19 +414,6 @@ void setup() {
   pinMode(BUZ_PIN, OUTPUT);
   digitalWrite(BUZ_PIN, LOW);
 
-  SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SS_PIN);
-  mfrc522.PCD_Init();
-  delay(50);
-
-  byte ver = mfrc522.PCD_ReadRegister(MFRC522::VersionReg);
-  Serial.print("MFRC522 version: 0x");
-  Serial.println(ver, HEX);
-  if (ver == 0x00 || ver == 0xFF) {
-    Serial.println("ERROR: RFID tidak terdeteksi!");
-  } else {
-    Serial.println("RFID OK");
-  }
-
   // Use DHCP by default. If you need a static IP, set correct gateway/subnet
   // IPAddress local_IP(192, 168, 107, 100);
   // IPAddress gateway(192, 168, 107, 1);
@@ -473,6 +460,19 @@ void setup() {
   lastSyncTime = millis();
 
   kirimPesan("Door LOCK online\n" + getWaktuDanTanggal() + "\n" + getHari());
+
+  // Initialize RFID after WiFi/TLS startup so a radio power spike cannot leave
+  // the RC522 readable over SPI but with its antenna disabled.
+  SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SS_PIN);
+  mfrc522.PCD_Init();
+  mfrc522.PCD_SetAntennaGain(MFRC522::RxGain_max);
+  mfrc522.PCD_AntennaOn();
+  delay(50);
+
+  byte ver = mfrc522.PCD_ReadRegister(MFRC522::VersionReg);
+  Serial.print("MFRC522 version: 0x");
+  Serial.println(ver, HEX);
+  Serial.println(ver == 0x00 || ver == 0xFF ? "ERROR: RFID tidak terdeteksi!" : "RFID OK - siap scan");
 
   ArduinoOTA.setHostname("DoorLock-ESP32");
   ArduinoOTA.begin();
@@ -586,7 +586,9 @@ void loop() {
     if (version == 0x00 || version == 0xFF) {
       Serial.println("RFID tidak merespons, reinitializing...");
       mfrc522.PCD_Init();
+      mfrc522.PCD_SetAntennaGain(MFRC522::RxGain_max);
     }
+    mfrc522.PCD_AntennaOn();
   }
 
   if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) return;

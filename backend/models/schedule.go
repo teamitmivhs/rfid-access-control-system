@@ -9,7 +9,6 @@ type Schedule struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// ScheduleRequest: Update jadwal dengan hanya 5 hari kerja (Senin-Jumat)
 type ScheduleRequest struct {
 	Senin  []string `json:"Senin"`
 	Selasa []string `json:"Selasa"`
