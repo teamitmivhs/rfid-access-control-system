@@ -87,6 +87,15 @@ func main() {
 		}
 	})
 
+	// ESP confirms a successful card sync so Telegram does not request it again.
+	mux.HandleFunc("/api/confirm-sync", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			handlers.ConfirmSyncHandler(db, w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
 	// 4. Jalankan HTTP server
 	// Start weekly reset goroutine
 	go startWeeklyReset(db)
