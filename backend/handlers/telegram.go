@@ -256,13 +256,42 @@ func handleSyncCommand(db *sql.DB, botToken string, chatID int) {
 }
 
 // handleStatusCommand: Handle /status command
+func deviceIsOnline(lastHeartbeat string, now time.Time) bool {
+	heartbeatTime, err := time.ParseInLocation("2006-01-02 15:04:05", lastHeartbeat, time.Local)
+	if err != nil {
+		return false
+	}
+	age := now.Sub(heartbeatTime)
+	return age >= 0 && age <= 2*time.Minute
+}
+
 func handleStatusCommand(db *sql.DB, botToken string, chatID int) {
 	// Get device status
-	var deviceName, relayStatus, lastHeartbeat string
+	var deviceName, relayStatus, lastHeartbeat, uptime, wifiStrength, freeMemory string
 
 	db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = 'device_name'").Scan(&deviceName)
 	db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = 'relay_status'").Scan(&relayStatus)
 	db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = 'device_last_heartbeat'").Scan(&lastHeartbeat)
+	db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = 'device_uptime'").Scan(&uptime)
+	db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = 'device_wifi_strength'").Scan(&wifiStrength)
+	db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = 'device_free_memory'").Scan(&freeMemory)
+
+	deviceStatus := "🔴 OFFLINE"
+	if deviceIsOnline(lastHeartbeat, time.Now()) {
+		deviceStatus = "🟢 ONLINE"
+	}
+	if lastHeartbeat == "" {
+		lastHeartbeat = "Belum ada"
+	}
+	if uptime == "" {
+		uptime = "0"
+	}
+	if wifiStrength == "" {
+		wifiStrength = "0"
+	}
+	if freeMemory == "" {
+		freeMemory = "0"
+	}
 
 	// Get scheduled cards count for today
 	now := time.Now()
@@ -291,12 +320,16 @@ func handleStatusCommand(db *sql.DB, botToken string, chatID int) {
 	message := fmt.Sprintf(
 		"📊 STATUS PINTU\n\n"+
 			"Device: %s\n"+
+			"Status: %s\n"+
 			"Relay: %s\n"+
 			"Last Heartbeat: %s\n"+
+			"Uptime: %s detik\n"+
+			"WiFi: %s dBm\n"+
+			"Free Memory: %s bytes\n"+
 			"Hari: %s\n"+
 			"Kartu Hari Ini: %d\n"+
 			"Akses Hari Ini: %d",
-		deviceName, relayStatusStr, lastHeartbeat, todayName, cardCount, accessCount,
+		deviceName, deviceStatus, relayStatusStr, lastHeartbeat, uptime, wifiStrength, freeMemory, todayName, cardCount, accessCount,
 	)
 	sendTelegramMessage(botToken, chatID, message)
 	log.Println("✅ /status command executed")

@@ -286,6 +286,11 @@ func DeviceHeartbeatHandler(db *sql.DB, w http.ResponseWriter, r *http.Request) 
 		jsonResponse(w, http.StatusBadRequest, models.ErrorResponse{Error: "Invalid request body"})
 		return
 	}
+	if req.DeviceName == "" || (req.RelayStatus != "0" && req.RelayStatus != "1") ||
+		req.Uptime < 0 || req.Uptime > 10*365*24*60*60 {
+		jsonResponse(w, http.StatusBadRequest, models.ErrorResponse{Error: "Invalid heartbeat data"})
+		return
+	}
 
 	// Update device settings di database
 	settingsToUpdate := map[string]string{
@@ -293,14 +298,10 @@ func DeviceHeartbeatHandler(db *sql.DB, w http.ResponseWriter, r *http.Request) 
 		"device_name":           req.DeviceName,
 		"relay_status":          req.RelayStatus,
 		"device_last_heartbeat": time.Now().Format("2006-01-02 15:04:05"),
-	}
-
-	// Jika device_started_at belum ada, set sekarang
-	var startedAt string
-	err := db.QueryRow("SELECT setting_value FROM settings WHERE setting_key = 'device_started_at'").Scan(&startedAt)
-	if err != nil || startedAt == "" {
-		db.Exec("INSERT INTO settings (setting_key, setting_value) VALUES ('device_started_at', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)",
-			time.Now().Format("2006-01-02 15:04:05"))
+		"device_started_at":     time.Now().Add(-time.Duration(req.Uptime) * time.Second).Format("2006-01-02 15:04:05"),
+		"device_uptime":         strconv.FormatInt(req.Uptime, 10),
+		"device_wifi_strength":  strconv.Itoa(req.WiFiStrength),
+		"device_free_memory":    strconv.Itoa(req.FreeMemory),
 	}
 
 	// Update semua settings
@@ -311,6 +312,8 @@ func DeviceHeartbeatHandler(db *sql.DB, w http.ResponseWriter, r *http.Request) 
 		)
 		if err != nil {
 			log.Println("Error updating setting "+key+":", err)
+			jsonResponse(w, http.StatusInternalServerError, models.ErrorResponse{Error: "Failed to save heartbeat"})
+			return
 		}
 	}
 

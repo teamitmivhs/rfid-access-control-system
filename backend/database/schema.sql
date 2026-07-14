@@ -53,8 +53,11 @@ INSERT INTO settings (setting_key, setting_value) VALUES
 ('door_name', 'Main Door Lock'),
 ('device_type', 'ESP32'),
 ('device_name', 'RFID Door Lock System'),
-('device_started_at', NOW()),
-('device_last_heartbeat', NOW()),
+('device_started_at', ''),
+('device_last_heartbeat', ''),
+('device_uptime', '0'),
+('device_wifi_strength', '0'),
+('device_free_memory', '0'),
 ('relay_status', '0')
 ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value);
 
